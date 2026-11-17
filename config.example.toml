@@ -1,0 +1,50 @@
+# Lofiji works immediately without a configuration file.
+# Default location: ~/.config/lofiji/config.toml
+format_24h = true
+show_seconds = true
+# A quiet local daily plan under the clock; v toggles it.
+# Show character reminders, tasks/objectives and conversation below the clock.
+show_plan = true
+blink_separator = true
+animations = true
+# clear / rain / snow
+weather = "clear"
+# window / city / forest / snow / bonfire / image
+background = "window"
+# Custom PNG or GIF; blank uses the bundled rainy window. Absolute, ~/..., or relative to this file.
+image_path = ""
+image_brightness = 30
+# Audio is opt-in with m or --music; these preferences do not enable autoplay.
+music_url = "https://www.youtube.com/watch?v=DEWzT1geuPU"
+music_volume = 25
+focus_minutes = 25
+short_break_minutes = 5
+long_break_minutes = 15
+auto_advance = false
+# off / bell / desktop (desktop requires notify-send)
+notifications = "off"
+
+# 0 follows the scene; 1 Tokyo, 2 Moonlight, 3 Ember, 4 Sage, 5 Lavender.
+# Color rows in Settings edit the selected preset; all presets are persisted.
+clock_palette = 0
+# pixel / round / digital / dots / outline / block / slant / scanline
+clock_style = "pixel"
+# Stored order: campfire, rain, café, storm, wind, summer night, forest, white/pink/brown noise, fireplace.
+# Sound preferences are remembered; audio stays off until explicitly started.
+sound_volumes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+# Optional AI. Model IDs are editable; use one offered by your account/server.
+# off / openai / anthropic / gemini / ollama / openrouter / compatible
+[ai]
+provider = "off"
+model = ""
+# Blank uses the provider default; compatible endpoints require a base URL.
+base_url = ""
+# Environment-variable NAME only. Blank uses the provider default (Ollama: no key).
+key_env = ""
+auto_brief = false
+# model_default / low / medium / high (on supported models)
+thinking_effort = "model_default"
+timeout_seconds = 60
+max_tokens = 4096
+anthropic_version = "2026-10-21"

@@ -1,0 +1,20 @@
+/target/
+/.codex-attachments/
+__pycache__/
+*.tmp
+*.bak
+*.swp
+
+# Local configuration, planner state and account credentials.
+.env
+.env.*
+/config.toml
+/lofiji.toml
+*.planner.toml
+*.planner.toml.lock
+*.chatgpt.json
+*.chatgpt.json.lock
+.lofiji-chatgpt-*
+*.pem
+*.key
+*.p12
