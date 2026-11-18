@@ -83,11 +83,20 @@ impl Runtime {
                         Ok(text)
                             if app.planner.data == job.data && app.config.ai == job.settings =>
                         {
-                            app.ai_daily = Some(ai::DailyBrief::from_reply(&text));
+                            app.ai_daily = job
+                                .data
+                                .pending(job.date)
+                                .first()
+                                .and_then(|task| ai::DailyBrief::from_reply(&text, task.id));
+                            let message = if app.ai_daily.is_some() {
+                                "AI next step ready"
+                            } else {
+                                "AI reply did not match your next task · showing the local plan"
+                            };
                             app.ai_daily_data = Some(job.data);
                             app.ai_daily_settings = Some(job.settings);
                             app.ai_daily_date = Some(job.date);
-                            app.message("AI daily suggestion ready", now);
+                            app.message(message, now);
                             dirty = true;
                         }
                         Ok(_) => {
@@ -145,6 +154,10 @@ impl Runtime {
             }
             if app.planner.error.is_some() {
                 app.message("Repair the goals file before requesting AI advice", now);
+                return true;
+            }
+            if app.planner.data.pending(date).is_empty() {
+                app.message("No pending tasks · press + to add one", now);
                 return true;
             }
             let settings = app.config.ai.clone();

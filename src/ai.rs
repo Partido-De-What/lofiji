@@ -852,32 +852,34 @@ const APP_TIPS: &[(&str, &str)] = &[
 const APP_HELP: &str = "On the clock, ? lists shortcuts, g opens tasks and objectives, c opens Talk, d refreshes AI advice, b cycles scenes, and s opens Settings with Appearance, Pomodoro, Audio and AI sections. In Settings, Ctrl+S saves. In Talk, Esc returns to the clock while keeping the thread and draft, Ctrl+K cancels a reply, and Ctrl+N starts a new chat.";
 
 pub struct DailyBrief {
-    pub next_step: Option<String>,
+    pub task_id: u64,
+    pub next_step: String,
     pub tip: Option<&'static str>,
 }
 
 impl DailyBrief {
-    pub fn from_reply(reply: &str) -> Self {
-        let mut brief = Self {
-            next_step: None,
-            tip: None,
-        };
-        for line in reply.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            if let Some(id) = line.strip_prefix("Tip:") {
-                if brief.tip.is_none() {
-                    brief.tip = APP_TIPS
-                        .iter()
-                        .find(|(key, _)| *key == id.trim())
-                        .map(|(_, text)| *text);
-                }
-            } else if brief.next_step.is_none() {
-                let step = line.strip_prefix("Next:").unwrap_or(line).trim();
-                if !step.is_empty() {
-                    brief.next_step = Some(step.chars().take(140).collect());
-                }
-            }
+    pub fn from_reply(reply: &str, expected_task_id: u64) -> Option<Self> {
+        let mut lines = reply.lines().map(str::trim).filter(|line| !line.is_empty());
+        let task_id = lines.next()?.strip_prefix("Task:")?.trim().parse().ok()?;
+        if task_id != expected_task_id {
+            return None;
         }
-        brief
+        let step = lines.next()?.strip_prefix("Next:")?.trim();
+        if step.is_empty() {
+            return None;
+        }
+        let tip = lines.next().and_then(|line| {
+            let id = line.strip_prefix("Tip:")?.trim();
+            APP_TIPS
+                .iter()
+                .find(|(key, _)| *key == id)
+                .map(|(_, text)| *text)
+        });
+        Some(Self {
+            task_id,
+            next_step: step.chars().take(140).collect(),
+            tip,
+        })
     }
 }
 
@@ -888,30 +890,41 @@ pub fn prepare(
     brief: bool,
     date: chrono::NaiveDate,
 ) -> Request {
-    let tasks = data.pending(date).into_iter().take(40).collect::<Vec<_>>();
-    let goals = data
-        .entries
-        .iter()
-        .filter(|e| {
-            matches!(
-                e.kind,
-                crate::planner::Kind::Short | crate::planner::Kind::Long
-            ) && !e.archived
-                && !e.done
-        })
-        .take(60)
+    let pending = data.pending(date);
+    let (context, mode) = if brief {
+        let task = pending.first().copied();
+        let linked_goals = std::iter::successors(
+            task.and_then(|task| task.parent)
+                .and_then(|id| data.entry(id)),
+            |goal| goal.parent.and_then(|id| data.entry(id)),
+        )
+        .take(2)
+        .filter(|goal| !goal.done && !goal.archived)
         .collect::<Vec<_>>();
-    let reminders = data
-        .entries
-        .iter()
-        .filter(|e| e.kind == crate::planner::Kind::Character && !e.archived && !e.done)
-        .take(20)
-        .collect::<Vec<_>>();
-    let context = json!({"date":date.to_string(),"tasks":tasks,"goals":goals,"character_reminders":reminders});
-    let mode = if brief {
-        "Return a short plain-text line starting with Next: and containing the next concrete step (at most 140 characters). If one of the app tips below would help with that step, add exactly one line in the form Tip: <id>. Use only a listed id, with no explanation on the Tip line."
+        (
+            json!({"date":date.to_string(),"task":task,"linked_goals":linked_goals}),
+            "The app has selected the only task in the JSON. Return exactly two short plain-text lines: Task: <its numeric id> and Next: <one concrete first action for that task, at most 140 characters>. Break the work down using only the task and its linked goals. Do not substitute other work or invent details such as files, people, or deadlines. Add Tip: <id> on a third line only if a listed shortcut directly helps with the action. Omit generic app tips.",
+        )
     } else {
-        "Have a calm, practical conversation. Suggest concrete next steps tied to the user's actual goals. Keep replies under 180 words unless asked for detail. When a Lofiji feature directly helps, a single short usage tip is welcome. If the user asks how to use Lofiji, answer directly using only the controls below. Do not invent shortcuts or features or assume an app mode is currently open."
+        let active = data.entries.iter().filter(|e| !e.archived && !e.done);
+        let goals = active
+            .clone()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    crate::planner::Kind::Short | crate::planner::Kind::Long
+                )
+            })
+            .take(60)
+            .collect::<Vec<_>>();
+        let reminders = active
+            .filter(|e| e.kind == crate::planner::Kind::Character)
+            .take(20)
+            .collect::<Vec<_>>();
+        (
+            json!({"date":date.to_string(),"tasks":pending.into_iter().take(40).collect::<Vec<_>>(),"goals":goals,"character_reminders":reminders}),
+            "Have a calm, practical conversation. When asked what to do next, anchor the answer in a pending saved task when one exists. Name the task and give one concrete first action. If no pending task fits, say so and ask what the user wants to add or clarify. Keep replies under 180 words unless asked for detail. When a Lofiji feature directly helps the task, a single short usage tip is welcome. If the user asks how to use Lofiji, answer directly using only the controls below. Do not invent shortcuts or features or assume an app mode is currently open.",
+        )
     };
     let tips = APP_TIPS
         .iter()
@@ -925,14 +938,63 @@ pub fn prepare(
 mod tests {
     use super::*;
     #[test]
-    fn daily_tip_resolves_only_known_actions() {
-        let brief = DailyBrief::from_reply("Next: Outline the chapter.\nTip: focus");
-        assert_eq!(brief.next_step.as_deref(), Some("Outline the chapter."));
+    fn daily_suggestions_require_the_selected_task_and_a_known_tip() {
+        let reply = "Task: 7\nNext: Outline the chapter.\nTip: focus";
+        let brief = DailyBrief::from_reply(reply, 7).unwrap();
+        assert_eq!(brief.task_id, 7);
+        assert_eq!(brief.next_step, "Outline the chapter.");
         assert_eq!(brief.tip, Some(APP_TIPS[0].1));
-
-        let brief = DailyBrief::from_reply("Tip: press Z to do something\nOutline the chapter.");
-        assert_eq!(brief.next_step.as_deref(), Some("Outline the chapter."));
+        assert!(DailyBrief::from_reply(reply, 8).is_none());
+        assert!(DailyBrief::from_reply("Next: Read a book.\nTip: focus", 7).is_none());
+        let brief =
+            DailyBrief::from_reply("Task: 7\nNext: Read a page.\nTip: invented", 7).unwrap();
         assert!(brief.tip.is_none());
+    }
+
+    #[test]
+    fn daily_request_only_sends_the_top_task_and_its_linked_goal() {
+        let data: crate::planner::Data = toml::from_str(
+            r#"
+            [[entries]]
+            id = 1
+            kind = "task"
+            title = "Other pending work"
+
+            [[entries]]
+            id = 2
+            kind = "task"
+            title = "Proofread the draft"
+            due = "2026-11-17"
+            parent = 3
+
+            [[entries]]
+            id = 3
+            kind = "short"
+            title = "Submit the manuscript"
+
+            [[entries]]
+            id = 4
+            kind = "long"
+            title = "Unrelated objective"
+
+            [[entries]]
+            id = 5
+            kind = "character"
+            title = "Private reminder"
+        "#,
+        )
+        .unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap();
+        let prepared = prepare(Settings::default(), &data, vec![], true, date);
+        assert!(prepared.system.contains("Proofread the draft"));
+        assert!(prepared.system.contains("Submit the manuscript"));
+        for excluded in [
+            "Other pending work",
+            "Unrelated objective",
+            "Private reminder",
+        ] {
+            assert!(!prepared.system.contains(excluded));
+        }
     }
 
     fn request(provider: Provider) -> Request {

@@ -121,15 +121,18 @@ pub enum Background {
     Forest,
     Snow,
     Bonfire,
+    #[serde(rename = "rain-room")]
+    RainRoom,
     Image,
 }
 impl Background {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Window,
         Self::City,
         Self::Forest,
         Self::Snow,
         Self::Bonfire,
+        Self::RainRoom,
         Self::Image,
     ];
     pub fn label(self) -> &'static str {
@@ -139,6 +142,7 @@ impl Background {
             Self::Forest => "Quiet forest · PNG",
             Self::Snow => "Snow mountains · PNG",
             Self::Bonfire => "Bonfire · PNG",
+            Self::RainRoom => "Rain Room · PNG",
             Self::Image => "Custom PNG / GIF",
         }
     }
@@ -156,8 +160,11 @@ impl Background {
             "forest" | "pines" => Ok(Self::Forest),
             "snow" => Ok(Self::Snow),
             "bonfire" => Ok(Self::Bonfire),
+            "rain-room" => Ok(Self::RainRoom),
             "image" => Ok(Self::Image),
-            _ => Err("Scene must be window, city, forest, snow, bonfire, or image".into()),
+            _ => {
+                Err("Scene must be window, city, forest, snow, bonfire, rain-room, or image".into())
+            }
         }
     }
 }
@@ -172,6 +179,11 @@ pub struct ClockPalette {
     pub date: String,
 }
 impl ClockPalette {
+    const RAIN_ROOM: [(&'static str, [&'static str; 4]); 2] = [
+        ("Hearthlight", ["#ffd69a", "#a8d6da", "#c3a685", "#ead9c1"]),
+        ("Rain Glass", ["#bde8e9", "#f5bd81", "#8eafb9", "#d2e4e4"]),
+    ];
+
     pub fn defaults() -> Vec<Self> {
         [
             ("Tokyo", ["#7aa2f7", "#bb9af7", "#8095bf", "#c0caf5"]),
@@ -181,14 +193,18 @@ impl ClockPalette {
             ("Lavender", ["#c8b6e8", "#e2b7ce", "#9f8dab", "#dfd5e8"]),
         ]
         .into_iter()
-        .map(|(name, colors)| Self {
+        .chain(Self::RAIN_ROOM)
+        .map(Self::from_preset)
+        .collect()
+    }
+    fn from_preset((name, colors): (&str, [&str; 4])) -> Self {
+        Self {
             name: name.into(),
             hours: colors[0].into(),
             seconds: colors[1].into(),
             separator: colors[2].into(),
             date: colors[3].into(),
-        })
-        .collect()
+        }
     }
 }
 pub fn hex_color(value: &str) -> Result<ratatui::style::Color, String> {
@@ -286,6 +302,11 @@ impl Config {
             Background::City => 0,
             Background::Window | Background::Snow | Background::Image => 1,
             Background::Bonfire => 2,
+            Background::RainRoom => self
+                .clock_palettes
+                .iter()
+                .position(|palette| palette.name == ClockPalette::RAIN_ROOM[0].0)
+                .unwrap_or(2),
             Background::Forest => 3,
         }
     }
@@ -351,10 +372,20 @@ impl Config {
                 volumes.push(toml::Value::Integer(0));
             }
         }
-        let config: Self = values
+        let mut config: Self = values
             .try_into()
             .map_err(|e| format!("Invalid settings: {e}"))?;
         config.validate()?;
+        // Append new presets without moving or replacing saved custom palettes.
+        for preset in ClockPalette::RAIN_ROOM {
+            if config.clock_palettes.len() < 16
+                && !config.clock_palettes.iter().any(|p| p.name == preset.0)
+            {
+                config
+                    .clock_palettes
+                    .push(ClockPalette::from_preset(preset));
+            }
+        }
         Ok(config)
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -438,6 +469,8 @@ mod tests {
         assert_eq!(c.palette().name, "Moonlight");
         c.background = Background::Bonfire;
         assert_eq!(c.palette().name, "Ember");
+        c.background = Background::RainRoom;
+        assert_eq!(c.palette().name, "Hearthlight");
         c.clock_palette = 1;
         assert_eq!(c.palette().name, "Tokyo");
         c.clock_palettes[0].hours = "#nope!!".into();
@@ -446,6 +479,23 @@ mod tests {
         assert!(hex_color("#éaaaa").is_err());
         let old: Config = toml::from_str(r#"background = "tokyo" "#).unwrap();
         assert_eq!(old.background, Background::City);
+    }
+    #[test]
+    fn rain_room_presets_preserve_saved_palette_indices() {
+        let path = env::temp_dir().join(format!(
+            "lofiji-palette-migration-{}.toml",
+            std::process::id()
+        ));
+        let mut config = Config::default();
+        config.clock_palettes.truncate(5);
+        config.clock_palettes[4].name = "My palette".into();
+        config.clock_palette = 5;
+        config.save(&path).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(loaded.palette(), &config.clock_palettes[4]);
+        assert_eq!(loaded.clock_palettes[5].name, "Hearthlight");
+        assert_eq!(loaded.clock_palettes[6].name, "Rain Glass");
     }
     #[test]
     fn partial_settings_use_defaults_and_invalid_values_are_rejected() {

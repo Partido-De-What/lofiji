@@ -25,6 +25,7 @@ impl Image {
         static FOREST: OnceLock<Result<Image, String>> = OnceLock::new();
         static SNOW: OnceLock<Result<Image, String>> = OnceLock::new();
         static BONFIRE: OnceLock<Result<Image, String>> = OnceLock::new();
+        static RAIN_ROOM: OnceLock<Result<Image, String>> = OnceLock::new();
         let (cache, bytes): (&OnceLock<Result<Image, String>>, &[u8]) = match scene {
             Background::Window => (
                 &WINDOW,
@@ -34,6 +35,10 @@ impl Image {
             Background::Forest => (&FOREST, include_bytes!("../assets/wallpapers/forest.png")),
             Background::Snow => (&SNOW, include_bytes!("../assets/wallpapers/snow.png")),
             Background::Bonfire => (&BONFIRE, include_bytes!("../assets/wallpapers/bonfire.png")),
+            Background::RainRoom => (
+                &RAIN_ROOM,
+                include_bytes!("../assets/wallpapers/rain-room.png"),
+            ),
             Background::Image => return Self::load(value, config),
         };
         cache
@@ -329,6 +334,7 @@ mod tests {
             Background::Forest,
             Background::Snow,
             Background::Bonfire,
+            Background::RainRoom,
         ] {
             let image = Image::scene(scene, "", Path::new("")).unwrap();
             assert!(image.animated());

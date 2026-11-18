@@ -1237,6 +1237,30 @@ mod tests {
         assert!(crate::preview::plain(&frame).contains("Esc back · ↑↓ scroll"));
     }
     #[test]
+    fn workspace_navigation_ends_with_ai_at_the_bottom_of_the_panel() {
+        use chrono::TimeZone;
+        let wall = Local.with_ymd_and_hms(2026, 11, 17, 22, 48, 7).unwrap();
+        for (w, h, action) in [
+            (120, 36, "d Ask AI for a next step"),
+            (80, 24, "d Ask AI"),
+            (60, 17, "d Ask AI"),
+            (28, 12, "d"),
+        ] {
+            let mut config = Config::default();
+            config.ai.provider = crate::ai::Provider::Openai;
+            let frame = crate::preview::snapshot(w, h, "plan", wall, config, 0.0).unwrap();
+            let layout = Composition::new(frame.area, "22:48:07");
+            let panel =
+                crate::planning_ui::workspace_area(frame.area, &layout, false, false).unwrap();
+            let row: String = (panel.x..panel.right())
+                .map(|x| frame.get(x, panel.bottom() - 1).symbol())
+                .collect();
+            assert!(row.trim_start().starts_with('h'), "{w}x{h}: {row}");
+            assert!(row.trim_end().ends_with(action), "{w}x{h}: {row}");
+            assert!(row.find('+').unwrap() < row.rfind(action).unwrap());
+        }
+    }
+    #[test]
     fn daily_guidance_and_planning_overlays_fit_without_moving_the_clock() {
         use chrono::TimeZone;
         let wall = Local.with_ymd_and_hms(2026, 11, 17, 9, 32, 5).unwrap();

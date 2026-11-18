@@ -15,14 +15,14 @@ Lofiji is a Linux desk clock with lofi pixel-art scenes, a Pomodoro timer, and a
 | **Studying or writing** | Open Pomodoro with **p**, start a focus session with **Space**, and mix a little rain or café noise with **a**. |
 | **Juggling a project and a deadline** | Capture a task with **+** and manage goals and due dates with **g**. Lofiji puts overdue and due-today work near the top. |
 | **Building a habit** | Use **h** to keep a short character reminder in sight, such as “Listen before responding.” Pause it when it no longer needs your attention. |
-| **Looking for a next step** | Open **Talk** with **c** for local guidance or optional AI chat. With a provider connected, **d** asks for a short plan and may suggest a relevant app shortcut. |
+| **Looking for a next step** | Open **Talk** with **c** for local guidance or optional AI chat. With a provider connected, **d** asks for one concrete first action on your top pending task and may suggest a relevant app shortcut. |
 | **Keeping a clock on a second screen** | Press **v** for clock-only view. Cycle pixel-art scenes with **b** and clock styles with **t**. You can also use your own PNG or GIF. |
 
 The clock, bundled scenes, timer, and planner work offline. Ambient loops work offline with **mpv**. YouTube playback is optional and requires **mpv**, **yt-dlp**, and **Node.js**.
 
 ![Rainy terminal clock with a running Pomodoro focus timer](docs/pomodoro.png)
 
-[Scene gallery](docs/scenes.png) · [Compact view](docs/plan-compact.png) · [Sound mixer](docs/sounds.png) · [Talk view](docs/conversation.png)
+[Scene gallery](docs/scenes.png) · [Rain Room](docs/rain-room.png) · [Compact view](docs/plan-compact.png) · [Sound mixer](docs/sounds.png) · [Talk view](docs/conversation.png)
 
 ## Start here
 

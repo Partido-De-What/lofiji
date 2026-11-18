@@ -35,7 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HELP: &str = "Lofiji — a small pocket of quiet\n\nUsage: lofiji [--config PATH] [--background SCENE]\n       lofiji --snapshot WIDTHxHEIGHT [--mode MODE] [--output PATH.svg]\n\nKeys: h character · g goals · + task · c talk · d AI brief · v workspace · b background · w weather · m music · a sounds · t clock style · p Pomodoro · s settings · ? help · q quit\n\nOptions:\n  --config PATH       Settings (default: $XDG_CONFIG_HOME/lofiji/config.toml)\n  --background SCENE  window, city, forest, snow, bonfire, image\n  --image PATH        Custom PNG / GIF background (selects image scene)\n  --weather MODE      clear, rain, snow\n  --music             Start optional YouTube audio on launch\n  --music-url URL     Override the saved YouTube link for this launch\n  --snapshot WxH      Render a preview without entering the terminal\n  --mode MODE         clock, focus, paused, break, settings, sounds, help, plan, goals, character, conversation, ai_settings\n  --at TIME           Local date/time (YYYY-MM-DDTHH:MM:SS) for previews\n  --elapsed SECONDS   Preview animation after elapsed time\n  --output PATH       Save preview as SVG, otherwise print text\n  --check-config      Validate settings and print their location\n  -h, --help          Show help\n  -V, --version       Show version\n";
+const HELP: &str = "Lofiji — a small pocket of quiet\n\nUsage: lofiji [--config PATH] [--background SCENE]\n       lofiji --snapshot WIDTHxHEIGHT [--mode MODE] [--output PATH.svg]\n\nKeys: h character · g goals · + task · c talk · d AI brief · v workspace · b background · w weather · m music · a sounds · t clock style · p Pomodoro · s settings · ? help · q quit\n\nOptions:\n  --config PATH       Settings (default: $XDG_CONFIG_HOME/lofiji/config.toml)\n  --background SCENE  window, city, forest, snow, bonfire, rain-room, image\n  --image PATH        Custom PNG / GIF background (selects image scene)\n  --weather MODE      clear, rain, snow\n  --music             Start optional YouTube audio on launch\n  --music-url URL     Override the saved YouTube link for this launch\n  --snapshot WxH      Render a preview without entering the terminal\n  --mode MODE         clock, focus, paused, break, settings, sounds, help, plan, goals, character, conversation, ai_settings\n  --at TIME           Local date/time (YYYY-MM-DDTHH:MM:SS) for previews\n  --elapsed SECONDS   Preview animation after elapsed time\n  --output PATH       Save preview as SVG, otherwise print text\n  --check-config      Validate settings and print their location\n  -h, --help          Show help\n  -V, --version       Show version\n";
 
 fn main() {
     if let Err(error) = run() {
@@ -221,7 +221,11 @@ fn run() -> Result<(), String> {
     let mut assistant = ai_runtime::Runtime::new();
     app.ai_daily_requested = app.config.ai.auto_brief
         && app.config.ai.provider != ai::Provider::Off
-        && !app.planner.data.entries.is_empty();
+        && !app
+            .planner
+            .data
+            .pending(Local::now().date_naive())
+            .is_empty();
     let events = terminal::input_events();
     let mut next_draw = Instant::now();
     let mut dirty = true;

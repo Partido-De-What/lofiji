@@ -9,7 +9,7 @@ blink_separator = true
 animations = true
 # clear / rain / snow
 weather = "clear"
-# window / city / forest / snow / bonfire / image
+# window / city / forest / snow / bonfire / rain-room / image
 background = "window"
 # Custom PNG or GIF; blank uses the bundled rainy window. Absolute, ~/..., or relative to this file.
 image_path = ""
@@ -24,7 +24,7 @@ auto_advance = false
 # off / bell / desktop (desktop requires notify-send)
 notifications = "off"
 
-# 0 follows the scene; 1 Tokyo, 2 Moonlight, 3 Ember, 4 Sage, 5 Lavender.
+# 0 follows the scene; 1 Tokyo, 2 Moonlight, 3 Ember, 4 Sage, 5 Lavender, 6 Hearthlight, 7 Rain Glass.
 # Color rows in Settings edit the selected preset; all presets are persisted.
 clock_palette = 0
 # pixel / round / digital / dots / outline / block / slant / scanline

@@ -9,6 +9,7 @@ pub enum Motion {
     Forest,
     Snow,
     Bonfire,
+    RainRoom,
 }
 impl Motion {
     pub fn for_scene(scene: Background) -> Option<Self> {
@@ -17,6 +18,7 @@ impl Motion {
             Background::Forest => Some(Self::Forest),
             Background::Snow => Some(Self::Snow),
             Background::Bonfire => Some(Self::Bonfire),
+            Background::RainRoom => Some(Self::RainRoom),
             _ => None,
         }
     }
@@ -160,6 +162,13 @@ impl Frame {
                 if (0.46..0.66).contains(&fx) && (0.65..0.84).contains(&fy) {
                     let pulse = [236, 248, 266, 278, 266, 248]
                         [((self.tick + u64::from(y / 2)) % 6) as usize];
+                    gain(&mut color, pulse);
+                }
+            }
+            Motion::RainRoom => {
+                // Flicker the flame and its spill on the hearth, away from the clock.
+                if (0.048..0.205).contains(&fx) && (0.59..0.84).contains(&fy) && warm(color) {
+                    let pulse = [256, 268, 261, 246, 255, 265, 250, 254][(self.tick % 8) as usize];
                     gain(&mut color, pulse);
                 }
             }

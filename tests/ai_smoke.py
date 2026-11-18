@@ -33,7 +33,7 @@ class Handler(BaseHTTPRequestHandler):
             status=200
             text='Stale suggestion must not appear' if mode=='stale' else 'Provider advice: review the proof first.'
             if 'Suggest my next step for today' in json.dumps(body):
-                text += '\nTip: focus'
+                text = 'Task: 1\nNext: ' + text + '\nTip: focus'
 
             if provider=='openai':response={'output':[{'content':[{'type':'output_text','text':text}]}]}
             elif provider=='anthropic':response={'content':[{'type':'text','text':text}]}

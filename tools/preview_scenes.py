@@ -16,22 +16,29 @@ def main():
     parser.add_argument('--output', type=Path, default=ROOT/'docs')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='lofiji-previews-') as tmp:
-        def render(scene='window', mode='clock', weather='clear', size='120x36', elapsed=8, style='pixel'):
+        def render(scene='window', mode='clock', weather='clear', size='120x36', elapsed=8, style='pixel', palette=0):
             path=Path(tmp)/'frame.svg'
             config=Path(tmp)/'config.toml'
-            config.write_text((ROOT/'config.example.toml').read_text().replace('clock_style = \"pixel\"',f'clock_style = \"{style}\"'))
+            example = (ROOT/'config.example.toml').read_text()
+            config_text = example.replace('clock_style = "pixel"', f'clock_style = "{style}"')
+            config_text = config_text.replace('clock_palette = 0', f'clock_palette = {palette}')
+            if scene == 'rain-room' and mode == 'clock':
+                config_text = config_text.replace('show_plan = true', 'show_plan = false')
+                config_text = config_text.replace('image_brightness = 30', 'image_brightness = 60')
+            config.write_text(config_text)
             subprocess.run([str(args.binary),'--config',str(config),'--snapshot',size,'--at','2026-11-16T22:48:07','--mode',mode,'--background',scene,'--weather',weather,'--elapsed',str(elapsed),'--output',str(path)],check=True)
             return Image.open(io.BytesIO(subprocess.check_output(['rsvg-convert',str(path)]))).convert('RGB')
-        names=[('window','Rainy window · GIF'),('city','Moonlit city'),('forest','Quiet forest'),('snow','Snow mountains'),('bonfire','Bonfire'),('image','Custom PNG / GIF')]
-        gallery=Image.new('RGB',(1200,1170),'#1a1b26')
+        names=[('window','Rainy window · GIF'),('city','Moonlit city'),('forest','Quiet forest'),('snow','Snow mountains'),('bonfire','Bonfire'),('rain-room','Rain Room'),('image','Custom PNG / GIF')]
+        gallery=Image.new('RGB',(1200,((len(names)+1)//2)*390),'#1a1b26')
         font=ImageFont.truetype(subprocess.check_output(['fc-match','-f','%{file}','DejaVu Sans Mono'],text=True),15)
         for i,(scene,label) in enumerate(names):
-            image=render(scene,weather='clear')
+            image=render(scene, style='round' if scene == 'rain-room' else 'pixel')
             image.save(args.output/f'{scene}.png')
             x=(i%2)*600;y=(i//2)*390
             gallery.paste(image.resize((600,360),Image.Resampling.NEAREST),(x,y+25))
             ImageDraw.Draw(gallery).text((x+12,y+4),label,font=font,fill='#c0caf5')
         gallery.save(args.output/'scenes.png')
+        render('rain-room', style='digital', palette=7).save(args.output/'rain-room-glass.png')
         motion=[]
         for t in range(48):
             grid=Image.new('RGB',(960,624),'#1a1b26')

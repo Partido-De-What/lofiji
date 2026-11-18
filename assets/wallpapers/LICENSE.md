@@ -22,4 +22,9 @@
 - Prompt: a quiet pixel-art campfire beside a moonlit lake and pine forest, with an open dark sky for the clock and restrained amber/indigo colors.
 - Included with the project's MIT license, to the extent copyright applies.
 
-All assets were retrieved/created on 2026-11-16. Scene images are embedded in the executable; custom PNGs and GIFs can replace them through Settings.
+## Rain Room
+
+- `rain-room.png` is original AI-generated artwork for Lofiji, inspired by a user-supplied reference for the rain-streaked city view and warm interior. The bundled image is 640×360.
+- Included with the project's MIT license, to the extent copyright applies.
+
+Scene images are embedded in the executable. Custom PNGs and GIFs are supported through Settings.

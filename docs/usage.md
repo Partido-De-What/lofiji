@@ -100,6 +100,7 @@ Every scene now uses a bundled image. The former terminal-drawn buildings, inter
 | Quiet forest | PNG + motion | Drifting clouds, gentle foliage and fireflies |
 | Snow mountains | PNG + motion | Drifting clouds and sparse falling snow |
 | Bonfire | PNG + motion | Flickering flame, rising embers and shimmering lake reflections |
+| Rain Room | PNG + motion | Teal windows over a rain-soaked city, a reading nook, and a softly flickering hearth |
 | Custom | PNG / GIF | Your own image; blank path uses the rainy window |
 
 Use `b` or the **Background** row in Settings. **Image path** accepts absolute paths, `~/…`, or paths relative to the config directory. Images are decoded and cached on selection. Half-block pixels preserve aspect ratio with a centered cover crop and adjustable dimming; the clock stays clear above the artwork.
@@ -108,11 +109,12 @@ Use `b` or the **Background** row in Settings. **Image path** accepts absolute p
 
 ```sh
 lofiji --background bonfire
+lofiji --background rain-room
 lofiji --background forest --weather rain
 lofiji --image ~/Pictures/lofi.gif
 ```
 
-Art credits and licenses: [wallpapers](../assets/wallpapers/LICENSE.md). The rainy window and SpritePilot scenes are CC0. Bonfire artwork was generated for Lofiji. [Rain preview](rain.gif).
+The rainy window and SpritePilot scenes are CC0. Bonfire and Rain Room were generated for Lofiji. [Art credits and licenses](../assets/wallpapers/LICENSE.md) · [Rain preview](rain.gif).
 
 ## Clock styles and palettes
 
@@ -122,7 +124,14 @@ Press `t` or change **Clock style** in Settings: Pixel, Rounded, Seven segment, 
 
 [Full numeral audit](numerals.png) · [Compact numeral audit](numerals-compact.png)
 
-**Clock palette → Scene** selects Moonlight for the window/snow, Tokyo for the city, Sage for the forest and Ember for the bonfire. You can also select any preset explicitly, including Lavender.
+**Clock palette → Scene** selects Moonlight for the window/snow, Tokyo for the city, Sage for the forest, Ember for the bonfire, and Hearthlight for Rain Room. You can select and edit any preset in Appearance.
+
+| Rain Room palette | Hours and minutes | Seconds | Separator | Date and controls |
+| --- | --- | --- | --- | --- |
+| Hearthlight | `#ffd69a` | `#a8d6da` | `#c3a685` | `#ead9c1` |
+| Rain Glass | `#bde8e9` | `#f5bd81` | `#8eafb9` | `#d2e4e4` |
+
+Both previews use clock-only view and 60% image brightness. [Hearthlight with Rounded numerals](rain-room.png) · [Rain Glass with Seven segment numerals](rain-room-glass.png)
 
 The four color rows beneath **Clock palette** edit hours/minutes, seconds, separators and date. Press Enter, type a `#RRGGBB` value, then Enter to accept and Ctrl-S to save. Changes modify and persist that preset; with **Scene** selected they modify the preset assigned to the current scene. Style and colors are independent. Advanced users can add named entries to `clock_palettes` in the config.
 

@@ -64,45 +64,82 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, date: NaiveDate, elapsed: st
             return;
         }
     }
-    let active = match &app.overlay {
-        Overlay::Planner(p) if p.kind == Kind::Character => 0,
-        Overlay::Planner(_) => 1,
-        Overlay::Conversation(_) => 2,
-        _ => usize::MAX,
-    };
-    let labels = if area.width >= 66 {
-        ["h Character", "g Tasks & objectives", "c Talk", "+ Add"]
-    } else if area.width >= 40 {
-        ["h Character", "g Tasks", "c Talk", "+ Add"]
-    } else {
-        ["h Self", "g Tasks", "c Talk", "+ Add"]
-    };
-    let mut tabs = Vec::new();
-    for (i, label) in labels.into_iter().enumerate() {
-        if i > 0 {
-            tabs.push(Span::styled("  ", Style::default().fg(muted)));
+    let content = Rect::new(
+        area.x,
+        area.y,
+        area.width,
+        area.height - if area.height >= 12 { 2 } else { 1 },
+    );
+    let (active, ai_action) = match &app.overlay {
+        Overlay::Planner(view) => {
+            if content.height > 0 {
+                entries(f, app, view, content, date);
+            }
+            (Some(usize::from(view.kind != Kind::Character)), None)
         }
+        _ => (
+            None,
+            overview(f, app, content, date, [accent, secondary, body, muted]),
+        ),
+    };
+    let (ai_full, ai_short) = ai_action.unwrap_or(("", ""));
+    let count = if ai_action.is_some() { 5 } else { 4 };
+    let labels = [
+        [
+            "h Character",
+            "g Tasks & objectives",
+            "c Talk",
+            "+ Add",
+            ai_full,
+        ],
+        [
+            "h Character",
+            "g Tasks & objectives",
+            "c Talk",
+            "+ Add",
+            ai_short,
+        ],
+        ["h Character", "g Tasks", "c Talk", "+ Add", ai_short],
+        ["h Self", "g Tasks", "c Talk", "+ Add", ai_short],
+        ["h", "g", "c", "+", "d"],
+    ]
+    .into_iter()
+    .find(|labels| {
+        let width = labels[..count]
+            .iter()
+            .map(|label| label.len())
+            .sum::<usize>();
+        width + (count - 1) * 3 + usize::from(active.is_some()) * 2 <= usize::from(area.width)
+    })
+    .unwrap_or(["h", "g", "c", "+", "d"]);
+    let mut tabs = Vec::new();
+    for (i, label) in labels.into_iter().take(count).enumerate() {
+        if i > 0 {
+            tabs.push(Span::raw("   "));
+        }
+        let selected = active == Some(i);
         tabs.push(Span::styled(
-            format!("{} {label}", if i == active { "›" } else { " " }),
-            Style::default().fg(if i == active { secondary } else { accent }),
+            if selected {
+                format!("› {label}")
+            } else {
+                label.into()
+            },
+            Style::default().fg(if selected { secondary } else { accent }),
         ));
     }
     f.render_widget(
         Paragraph::new(Line::from(tabs)),
-        Rect::new(area.x, area.y, area.width, 1),
+        Rect::new(area.x, area.bottom() - 1, area.width, 1),
     );
-    if area.height < 3 {
-        return;
-    }
-    let gap = if area.height < 12 { 1 } else { 2 };
-    let content = Rect::new(area.x, area.y + gap, area.width, area.height - gap);
-    match &app.overlay {
-        Overlay::Planner(view) => entries(f, app, view, content, date),
-        _ => overview(f, app, content, date, [accent, secondary, body, muted]),
-    }
 }
 
-fn overview(f: &mut Frame, app: &App, area: Rect, date: NaiveDate, palette: [Color; 4]) {
+fn overview(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    date: NaiveDate,
+    palette: [Color; 4],
+) -> Option<(&'static str, &'static str)> {
     let [accent, _, body, muted] = palette;
     if let Some(error) = &app.planner.error {
         line(
@@ -112,7 +149,7 @@ fn overview(f: &mut Frame, app: &App, area: Rect, date: NaiveDate, palette: [Col
             format!("Goals couldn't be loaded · g for details: {error}"),
             accent,
         );
-        return;
+        return None;
     }
     let reminders: Vec<_> = app
         .planner
@@ -131,8 +168,17 @@ fn overview(f: &mut Frame, app: &App, area: Rect, date: NaiveDate, palette: [Col
     } else {
         None
     };
-    let next_step = brief.and_then(|brief| brief.next_step.as_deref());
+    let next_step = brief.map(|brief| brief.next_step.as_str());
     let tip = brief.and_then(|brief| brief.tip);
+    let ai_action = if app.config.ai.provider != Provider::Off && !tasks.is_empty() {
+        Some(if brief.is_some() {
+            ("d Refresh AI suggestion", "d Refresh AI")
+        } else {
+            ("d Ask AI for a next step", "d Ask AI")
+        })
+    } else {
+        None
+    };
     let (short, long) = app.planner.data.goals_for(tasks.first().copied());
     if area.height < 5 || area.width < 58 {
         let task = tasks
@@ -157,20 +203,18 @@ fn overview(f: &mut Frame, app: &App, area: Rect, date: NaiveDate, palette: [Col
         );
         line(f, area, 1, format!("Character · {reminder}"), body);
         if let Some(step) = next_step {
-            line(f, area, 2, format!("d Refresh · AI · {step}"), body);
+            line(f, area, 2, format!("AI next step · {step}"), body);
         } else if let Some(goal) = short.or(long) {
             line(f, area, 2, format!("Toward · {}", goal.title), body);
         }
         if let Some(tip) = tip {
             line(f, area, 3, format!("Tip · {tip}"), body);
-        } else if app.config.ai.provider != Provider::Off && brief.is_none() {
-            line(f, area, 3, "d Ask AI for a next step", accent);
         }
-        return;
+        return ai_action;
     }
     let advice_rows = if tip.is_some() && area.height >= 6 {
         2
-    } else if app.config.ai.provider != Provider::Off {
+    } else if next_step.is_some() {
         1
     } else {
         0
@@ -213,7 +257,13 @@ fn overview(f: &mut Frame, app: &App, area: Rect, date: NaiveDate, palette: [Col
             2 + i as u16,
             format!(
                 "{} {}{title}",
-                if i == 0 { "›" } else { "·" },
+                if brief.is_some_and(|brief| brief.task_id == entry.id) {
+                    "AI ›"
+                } else if i == 0 {
+                    "›"
+                } else {
+                    "·"
+                },
                 due,
                 title = entry.title
             ),
@@ -245,19 +295,16 @@ fn overview(f: &mut Frame, app: &App, area: Rect, date: NaiveDate, palette: [Col
             }
         }
     }
-    if app.config.ai.provider != Provider::Off {
+    if let Some(step) = next_step {
         let footer = area.height - advice_rows;
-        let caption = next_step.map_or_else(
-            || "d Ask AI for a next step".into(),
-            |step| format!("d Refresh · AI · {step}"),
-        );
-        line(f, area, footer, caption, body);
+        line(f, area, footer, format!("AI next step · {step}"), body);
         if advice_rows == 2 {
             if let Some(tip) = tip {
                 line(f, area, footer + 1, format!("Tip · {tip}"), body);
             }
         }
     }
+    ai_action
 }
 
 fn entries(f: &mut Frame, app: &App, view: &crate::planning::Panel, area: Rect, date: NaiveDate) {
