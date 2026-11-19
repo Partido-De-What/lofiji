@@ -3,7 +3,10 @@ use crate::{
     ai::Provider,
     app::{App, Overlay},
     planner::Kind,
-    planning_ui::{chat_controls, chat_status, clipped, colors, input_line, wrap_lines},
+    planning::Field,
+    planning_ui::{
+        chat_controls, chat_status, clipped, colors, input_line, wrap_lines, wrapped_input,
+    },
     ui::text,
 };
 use chrono::NaiveDate;
@@ -179,196 +182,255 @@ fn overview(
     } else {
         None
     };
-    let (short, long) = app.planner.data.goals_for(tasks.first().copied());
-    if area.height < 5 || area.width < 58 {
-        let task = tasks
-            .first()
-            .map_or("+ to add a task", |entry| entry.title.as_str());
-        let reminder = reminders
-            .first()
-            .map_or("h then + to add a reminder", |entry| entry.title.as_str());
-        line(
-            f,
-            area,
-            0,
-            format!(
-                "{} {task}",
-                if tasks.is_empty() {
-                    "Next ·"
-                } else {
-                    "Start with:"
-                }
+    let wide = area.width >= 68 && area.height >= 4;
+    let mut columns = if wide {
+        let character_width = area.width / 4;
+        let task_width = area.width * 2 / 5;
+        let goals_x = character_width + task_width + 4;
+        vec![
+            (
+                Rect::new(area.x, area.y, character_width, area.height),
+                Vec::new(),
             ),
-            body,
-        );
-        line(f, area, 1, format!("Character · {reminder}"), body);
-        if let Some(step) = next_step {
-            line(f, area, 2, format!("AI next step · {step}"), body);
-        } else if let Some(goal) = short.or(long) {
-            line(f, area, 2, format!("Toward · {}", goal.title), body);
-        }
-        if let Some(tip) = tip {
-            line(f, area, 3, format!("Tip · {tip}"), body);
-        }
-        return ai_action;
-    }
-    let advice_rows = if tip.is_some() && area.height >= 6 {
-        2
-    } else if next_step.is_some() {
-        1
+            (
+                Rect::new(
+                    area.x + character_width + 2,
+                    area.y,
+                    task_width,
+                    area.height,
+                ),
+                Vec::new(),
+            ),
+            (
+                Rect::new(area.x + goals_x, area.y, area.width - goals_x, area.height),
+                Vec::new(),
+            ),
+        ]
     } else {
-        0
+        vec![(area, Vec::new())]
     };
-    let left_width = (area.width * 2 / 5).min(37);
-    let left = Rect::new(area.x, area.y, left_width, area.height);
-    let right = Rect::new(
-        area.x + left_width + 4,
-        area.y,
-        area.width - left_width - 4,
-        area.height,
-    );
-    line(f, left, 0, "CHARACTER", accent);
-    line(f, right, 0, "TASKS & OBJECTIVES", accent);
-    let rows = area.height.saturating_sub(5).clamp(1, 4);
-    if reminders.is_empty() {
-        line(f, left, 2, "What would you like to practise?", body);
-        line(f, left, 3, "h then + adds a reminder", muted);
-    }
-    for (i, entry) in reminders.iter().take(usize::from(rows)).enumerate() {
-        line(f, left, 2 + i as u16, format!("· {}", entry.title), body);
+    let task_column = usize::from(wide);
+    let goal_column = task_column * 2;
+
+    if wide {
+        for ((column, _), heading) in columns.iter_mut().zip(["CHARACTER", "TASKS", "OBJECTIVES"]) {
+            line(f, *column, 0, heading, accent);
+            column.y += 1;
+            column.height -= 1;
+        }
+        if reminders.is_empty() {
+            push_wrapped(&mut columns[0], "h then + adds a reminder", muted);
+        }
+        for reminder in reminders.iter().take(4) {
+            push_wrapped(&mut columns[0], &format!("· {}", reminder.title), body);
+        }
     }
     if tasks.is_empty() {
-        line(f, right, 2, "A small step is enough.", body);
-        line(f, right, 3, "+ adds a task · g edits objectives", muted);
+        push_wrapped(&mut columns[task_column], "+ adds a task", muted);
     }
-    for (i, entry) in tasks.iter().take(usize::from(rows)).enumerate() {
+    for (i, entry) in tasks
+        .iter()
+        .take(if wide { tasks.len() } else { 1 })
+        .enumerate()
+    {
         let due = match entry
             .due
             .as_deref()
-            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+            .and_then(|due| NaiveDate::parse_from_str(due, "%Y-%m-%d").ok())
         {
-            Some(d) if d < date => "overdue · ",
-            Some(d) if d == date => "today · ",
+            Some(due) if due < date => "overdue · ",
+            Some(due) if due == date => "today · ",
             _ => "",
         };
-        line(
-            f,
-            right,
-            2 + i as u16,
-            format!(
-                "{} {}{title}",
-                if brief.is_some_and(|brief| brief.task_id == entry.id) {
-                    "AI ›"
-                } else if i == 0 {
-                    "›"
-                } else {
-                    "·"
-                },
-                due,
-                title = entry.title
-            ),
+        let prefix = if !wide {
+            "Start with:"
+        } else if brief.is_some_and(|brief| brief.task_id == entry.id) {
+            "AI ›"
+        } else if i == 0 {
+            "›"
+        } else {
+            "·"
+        };
+        push_wrapped(
+            &mut columns[task_column],
+            &format!("{prefix} {due}{}", entry.title),
             body,
         );
     }
-    let goal_row = (tasks.len().min(usize::from(rows)) as u16).max(2) + 3;
-    if goal_row < area.height - advice_rows {
-        if let Some(goal) = short.or(long) {
-            line(
-                f,
-                right,
-                goal_row,
-                format!("Toward · {}", goal.title),
-                muted,
+    if !wide {
+        let reminder = reminders
+            .first()
+            .map_or("h then + to add a reminder", |entry| entry.title.as_str());
+        push_wrapped(&mut columns[0], &format!("Character · {reminder}"), body);
+        if let Some(step) = next_step.filter(|_| area.height < 4) {
+            push_wrapped(&mut columns[0], &format!("AI next step · {step}"), body);
+        }
+    }
+
+    for (kind, label) in [(Kind::Short, "Short term"), (Kind::Long, "Long term")] {
+        for goal in app
+            .planner
+            .data
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == kind && !entry.done && !entry.archived)
+        {
+            push_wrapped(
+                &mut columns[goal_column],
+                &format!("{label} · {}", goal.title),
+                body,
             );
         }
     }
-    if area.height >= 9 && goal_row + 1 < area.height - advice_rows {
-        if let (Some(short), Some(long)) = (short, long) {
-            if short.id != long.id {
-                line(
-                    f,
-                    right,
-                    goal_row + 1,
-                    format!("Long term · {}", long.title),
-                    muted,
-                );
-            }
+    if wide && columns[goal_column].1.is_empty() {
+        push_wrapped(&mut columns[goal_column], "g opens objectives", muted);
+    }
+    let advice_rows = u16::from(next_step.is_some() && area.height >= 4)
+        + u16::from(tip.is_some() && area.height >= 6);
+    let rows = columns[0].0.height.saturating_sub(advice_rows);
+    let longest = columns
+        .iter()
+        .map(|(_, lines)| lines.len())
+        .max()
+        .unwrap_or(0);
+    let show_scroll_hint = rows >= 4 && longest > usize::from(rows);
+    let visible = rows.saturating_sub(u16::from(show_scroll_hint));
+    let offset = app
+        .workspace_scroll
+        .get()
+        .min(longest.saturating_sub(usize::from(visible)));
+    if visible > 0 {
+        app.workspace_scroll.set(offset);
+        for (column, lines) in columns {
+            let lines = lines
+                .into_iter()
+                .skip(offset)
+                .take(usize::from(visible))
+                .collect::<Vec<_>>();
+            f.render_widget(
+                Paragraph::new(lines),
+                Rect::new(column.x, column.y, column.width, visible),
+            );
         }
     }
-    if let Some(step) = next_step {
-        let footer = area.height - advice_rows;
-        line(f, area, footer, format!("AI next step · {step}"), body);
-        if advice_rows == 2 {
-            if let Some(tip) = tip {
-                line(f, area, footer + 1, format!("Tip · {tip}"), body);
-            }
+    if show_scroll_hint {
+        line(
+            f,
+            area,
+            area.height - advice_rows - 1,
+            "↑↓ scroll · Home top",
+            muted,
+        );
+    }
+    if advice_rows > 0 {
+        let row = area.height - advice_rows;
+        if let Some(step) = next_step {
+            line(f, area, row, format!("AI next step · {step}"), body);
+        }
+        if let Some(tip) = tip.filter(|_| advice_rows == 2) {
+            line(f, area, row + 1, format!("Tip · {tip}"), body);
         }
     }
     ai_action
 }
 
-fn entries(f: &mut Frame, app: &App, view: &crate::planning::Panel, area: Rect, date: NaiveDate) {
+fn push_wrapped(column: &mut (Rect, Vec<Line<'static>>), value: &str, color: Color) {
+    column.1.extend(
+        wrap_lines(value, usize::from(column.0.width))
+            .into_iter()
+            .map(|row| Line::from(row).style(Style::default().fg(color))),
+    );
+}
+
+pub(crate) fn entries(
+    f: &mut Frame,
+    app: &App,
+    view: &crate::planning::Panel,
+    area: Rect,
+    date: NaiveDate,
+) {
     let [accent, secondary, body, muted] = colors(app.config.palette());
     let character = view.kind == Kind::Character;
     if let Some(editor) = &view.editor {
-        let fields = if !character && area.height >= 15 {
-            (0..4).collect::<Vec<_>>()
+        let active = editor.active_field();
+        let all_fields = editor.fields();
+        let full = area.height
+            >= if editor.entry.kind == Kind::Task {
+                17
+            } else {
+                15
+            };
+        let fields = if full {
+            all_fields
         } else {
-            vec![editor.field]
+            std::slice::from_ref(&active)
         };
-        let labels = [
-            "Title",
-            "Linked objective · ←→ choose",
-            "Due date · YYYY-MM-DD or blank",
-            "Priority · ←→ choose",
-        ];
-        for (i, field) in fields.into_iter().enumerate() {
-            let y = i as u16 * 3;
+        let mut y = 0;
+        for &field in fields {
+            let selected = field == active;
+            let (label, input) = match field {
+                Field::Title if !full && editor.entry.kind == Kind::Task => {
+                    ("Title · Tab for description", Some(&editor.title))
+                }
+                Field::Title => ("Title", Some(&editor.title)),
+                Field::Description => ("Description · optional", Some(&editor.description)),
+                Field::Link => ("Linked objective · ←→ choose", None),
+                Field::Due => ("Due date · YYYY-MM-DD or blank", Some(&editor.due)),
+                Field::Priority => ("Priority · ←→ choose", None),
+            };
             line(
                 f,
                 area,
                 y,
-                format!(
-                    "{} {}",
-                    if field == editor.field { "›" } else { " " },
-                    labels[field]
-                ),
+                format!("{} {label}", if selected { "›" } else { " " }),
                 secondary,
             );
-            let value = match field {
-                0 => editor.title.value.clone(),
-                1 => editor
-                    .entry
-                    .parent
-                    .and_then(|id| app.planner.data.entry(id))
-                    .map(|e| e.title.clone())
-                    .unwrap_or_else(|| "No linked objective".into()),
-                2 => editor.due.value.clone(),
-                _ => editor.entry.priority.label().into(),
-            };
-            let input = Rect::new(area.x + 2, area.y + y + 1, area.width.saturating_sub(2), 1);
-            if field == editor.field && (field == 0 || field == 2) {
-                input_line(
-                    f,
-                    input,
-                    if field == 0 {
-                        &editor.title
-                    } else {
-                        &editor.due
-                    },
-                    body,
-                );
+            let wrapped = field == Field::Description
+                || (field == Field::Title && editor.entry.kind == Kind::Task);
+            let height = if wrapped {
+                if full {
+                    3
+                } else {
+                    area.height.saturating_sub(3)
+                }
             } else {
-                text(
-                    f,
-                    input.x,
-                    input.y,
-                    input.width,
-                    value,
-                    body,
-                    Alignment::Left,
-                );
+                1
+            };
+            let rect = Rect::new(
+                area.x + 2,
+                area.y + y + 1,
+                area.width.saturating_sub(2),
+                height,
+            );
+            if let Some(input) = input {
+                if wrapped {
+                    wrapped_input(f, rect, input, selected, body);
+                } else if selected {
+                    input_line(f, rect, input, body);
+                } else {
+                    text(
+                        f,
+                        rect.x,
+                        rect.y,
+                        rect.width,
+                        &input.value,
+                        body,
+                        Alignment::Left,
+                    );
+                }
+            } else {
+                let value = if field == Field::Priority {
+                    editor.entry.priority.label()
+                } else {
+                    editor
+                        .entry
+                        .parent
+                        .and_then(|id| app.planner.data.entry(id))
+                        .map_or("No linked objective", |e| e.title.as_str())
+                };
+                text(f, rect.x, rect.y, rect.width, value, body, Alignment::Left);
             }
+            y += height + 1;
         }
         if area.height >= 5 {
             line(
@@ -435,7 +497,6 @@ fn entries(f: &mut Frame, app: &App, view: &crate::planning::Panel, area: Rect, 
     }
     let items = view.entries(&app.planner.data, date);
     let slots = usize::from(area.height.saturating_sub(4)).max(1);
-    let start = (view.selected + 1).saturating_sub(slots);
     if items.is_empty() {
         line(
             f,
@@ -451,36 +512,55 @@ fn entries(f: &mut Frame, app: &App, view: &crate::planning::Panel, area: Rect, 
             body,
         );
     }
-    for (i, entry) in items.iter().enumerate().skip(start).take(slots) {
-        let status = if character {
-            if entry.done {
-                "paused"
-            } else {
-                "·"
-            }
-        } else if entry.done {
-            "x"
-        } else {
-            " "
-        };
-        line(
-            f,
-            area,
-            2 + (i - start) as u16,
-            format!(
+    let entries: Vec<_> = items
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let status = match (character, entry.done) {
+                (true, true) => "paused",
+                (true, false) => "·",
+                (false, true) => "x",
+                (false, false) => " ",
+            };
+            let title = format!(
                 "{} [{status}] #{} {}",
                 if i == view.selected { "›" } else { " " },
                 entry.id,
-                entry.title
-            ),
-            if i == view.selected {
+                entry.title,
+            );
+            let rows = if task_view {
+                wrap_lines(&title, usize::from(area.width))
+            } else {
+                vec![title]
+            };
+            let color = if i == view.selected {
                 secondary
             } else if entry.done {
                 muted
             } else {
                 body
-            },
-        );
+            };
+            (rows, color)
+        })
+        .collect();
+    let selected = view.selected.min(entries.len().saturating_sub(1));
+    let mut start = selected;
+    let selected_rows = entries.get(selected).map_or(0, |(rows, _)| rows.len());
+    let mut remaining = slots.saturating_sub(selected_rows);
+    for (rows, _) in entries[..selected].iter().rev() {
+        if rows.len() > remaining {
+            break;
+        }
+        remaining -= rows.len();
+        start -= 1;
+    }
+    for (i, (value, color)) in entries[start..]
+        .iter()
+        .flat_map(|(rows, color)| rows.iter().map(move |row| (row, *color)))
+        .take(slots)
+        .enumerate()
+    {
+        line(f, area, 2 + i as u16, value, color);
     }
     if area.height >= 6 {
         line(

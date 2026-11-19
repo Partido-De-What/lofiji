@@ -38,15 +38,21 @@ with tempfile.TemporaryDirectory(prefix='lofiji-planner-pty-') as tmp:
     def entries():return tomllib.loads(data.read_text())['entries']
     proc=launch()
     try:
-        drain(.3);send(b'+');paste('Review equations in 東京');send(b'\r')
+        drain(.3);send(b'+');paste('Review equations in 東京');send(b'\t')
+        paste('Compare the proof with the café notes.');send(b'\r')
         assert entries()[0]['title']=='Review equations in 東京' and proc.poll() is None,'q or Unicode broke task entry'
+        assert entries()[0]['description']=='Compare the proof with the café notes.'
         send(b'\x1b');send(b'g'+b'\x1b[C'*2+b'+');paste('Publish a thoughtful project');send(b'\r')
         send(b'\x1b[D'+b'+');paste('Finish the first release')
         send(b'\t'+b'\x1b[C'+b'\r')
         rows=entries();assert rows[2]['parent']==rows[1]['id'],'short goal was not linked to long goal'
-        send(b'\x1b[D'+b'\r'+b'\t'+b'\x1b[C'*2+b'\t');paste('2026-11-17')
+        send(b'\x1b[D'+b'\r')
+        out=re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]',b'',send(b'\t')+redraw())
+        assert b'Compare the proof' in out, 'description did not reopen in the editor: '+repr(out[-2000:])
+        send(b'\t'+b'\x1b[C'*2+b'\t');paste('2026-11-17')
         send(b'\t'+b'\x1b[D'+b'\r')
         rows=entries();assert rows[0]['parent']==rows[2]['id'] and rows[0]['priority']=='high' and rows[0]['due']=='2026-11-17'
+        assert rows[0]['description']=='Compare the proof with the café notes.', 'editing other fields changed the description'
         send(b'\x1b');out=re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]',b'',send(b'c')+redraw());assert b'AI off' in out,'local mode was not disclosed: '+repr(out[-8000:])
         paste('task: Ask a question about café');send(b'\r');assert len(entries())==4
         paste('done #1');send(b'\r');assert entries()[0]['done']

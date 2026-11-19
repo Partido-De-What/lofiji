@@ -30,7 +30,7 @@ The clock sits higher on the screen, leaving room beneath the date for a small t
 
 Character reminders describe qualities or habits you want to practise—for example, “listen before responding.” Press **h**, then **+** to add your own. **Enter** edits, **Space** pauses/resumes a reminder, **x** archives and **u** undoes the last archive. Reminders are ongoing; they do not become tasks or count as completed work. Paused reminders leave the overview and AI context. [Character menu preview](character.png).
 
-Tasks appear in deadline/priority order: overdue, due today, unscheduled, then future deadlines. The overview includes linked short/long-term objectives when space allows. Press **v**, or toggle **Text workspace** in Settings, for the centered clock-only layout. Opening a list or chat makes space for it again. Very small windows simplify the overview and use the compact editor fallback.
+Tasks appear in deadline and priority order, starting with overdue tasks and tasks due today, then unscheduled tasks and future deadlines. The overview includes every active short- and long-term goal, including goals without linked tasks. Long task titles wrap. Use **↑/↓** to scroll when the workspace fills up and **Home** to return to the top. Press **v**, or toggle **Text workspace** in Settings, for the centered clock-only layout. Opening a list or chat makes space for it again.
 
 ![Daily plan](plan.png)
 
@@ -44,7 +44,7 @@ Press **+**, type a task and press **Enter** to save. Press **g** to manage task
 - **x** archives the selected entry; **u** undoes the most recent archive while the manager is open.
 - **Esc** closes the editor or manager.
 
-The editor starts on the title. **Tab / Shift-Tab** moves between title, linked goal, due date and priority. Use **←/→** to select a goal or priority. Dates use `YYYY-MM-DD`; a blank date means no deadline. Tasks can link to either kind of goal, and short-term goals can link to long-term goals. Completing a goal does not silently complete its tasks.
+The editor starts on the title. **Tab / Shift-Tab** moves between fields. For tasks, the first **Tab** opens the optional description, which you can read or edit later with **g** and **Enter**. Use **←/→** to select a goal or priority. Dates use `YYYY-MM-DD`. Leave the date blank for a task without a deadline. Tasks can link to either kind of goal, and short-term goals can link to long-term goals.
 
 ![Goal manager](goals.png)
 

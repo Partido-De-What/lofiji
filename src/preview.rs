@@ -95,6 +95,7 @@ pub fn snapshot(
                 id,
                 kind,
                 title: title.into(),
+                description: String::new(),
                 parent,
                 due,
                 priority,

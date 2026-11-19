@@ -72,6 +72,8 @@ pub struct Entry {
     pub id: u64,
     pub kind: Kind,
     pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -84,11 +86,14 @@ pub struct Entry {
     pub archived: bool,
 }
 impl Entry {
+    pub const DESCRIPTION_LIMIT: usize = 1024;
+
     pub fn blank(kind: Kind) -> Self {
         Self {
             id: 0,
             kind,
             title: String::new(),
+            description: String::new(),
             parent: None,
             due: None,
             priority: Priority::Normal,
@@ -152,6 +157,16 @@ impl Data {
                 || e.title.chars().any(char::is_control)
             {
                 return Err("Use a title of 1–512 bytes without control characters".into());
+            }
+            if !e.description.is_empty()
+                && (e.kind != Kind::Task
+                    || e.description.len() > Entry::DESCRIPTION_LIMIT
+                    || e.description.chars().any(char::is_control))
+            {
+                return Err(format!(
+                    "Task descriptions must fit within {} bytes without control characters",
+                    Entry::DESCRIPTION_LIMIT
+                ));
             }
             if let Some(due) = &e.due {
                 NaiveDate::parse_from_str(due, "%Y-%m-%d")
@@ -281,6 +296,8 @@ impl Data {
         self.daily_lines(date, 4).join("\n")
     }
 }
+const MAX_FILE_SIZE: usize = 4 * 1024 * 1024;
+
 fn read(path: &Path) -> Result<Data, String> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
@@ -288,10 +305,10 @@ fn read(path: &Path) -> Result<Data, String> {
         Err(e) => return Err(format!("Cannot read goals: {e}")),
     };
     let mut text = String::new();
-    file.take(4 * 1024 * 1024 + 1)
+    file.take((MAX_FILE_SIZE + 1) as u64)
         .read_to_string(&mut text)
         .map_err(|e| format!("Cannot read goals: {e}"))?;
-    if text.len() > 4 * 1024 * 1024 {
+    if text.len() > MAX_FILE_SIZE {
         return Err("Planner file exceeds 4 MiB".into());
     }
     let data: Data = toml::from_str(&text)
@@ -351,6 +368,10 @@ impl Store {
             if read(path)? != self.data {
                 return Err("Goals changed in another window. Reopen Goals, then retry.".into());
             }
+            let contents = toml::to_string_pretty(&draft).map_err(|e| e.to_string())?;
+            if contents.len() > MAX_FILE_SIZE {
+                return Err("Planner file exceeds 4 MiB".into());
+            }
             let temp = path.with_extension(format!(
                 "{}.{}.tmp",
                 std::process::id(),
@@ -363,12 +384,8 @@ impl Store {
                     .mode(0o600)
                     .open(&temp)
                     .map_err(|e| e.to_string())?;
-                file.write_all(
-                    toml::to_string_pretty(&draft)
-                        .map_err(|e| e.to_string())?
-                        .as_bytes(),
-                )
-                .map_err(|e| e.to_string())?;
+                file.write_all(contents.as_bytes())
+                    .map_err(|e| e.to_string())?;
                 file.sync_all().map_err(|e| e.to_string())?;
                 fs::rename(&temp, path).map_err(|e| e.to_string())?;
                 Ok(())

@@ -5,6 +5,7 @@ use crate::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{
+    cell::Cell,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -123,6 +124,7 @@ pub struct App {
     pub ai_session: u64,
     parked_chat: Option<crate::planning::Conversation>,
     pub help_scroll: usize,
+    pub workspace_scroll: Cell<usize>,
     pub viewport_height: u16,
     pub ai_daily_requested: bool,
     pub ai_daily: Option<crate::ai::DailyBrief>,
@@ -150,6 +152,7 @@ impl App {
             ai_session: 0,
             parked_chat: None,
             help_scroll: 0,
+            workspace_scroll: Cell::new(0),
             viewport_height: 25,
             chatgpt_client: crate::ai::Client::new(),
             chatgpt_action: None,
@@ -633,6 +636,14 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Down if self.config.show_plan => {
+                self.workspace_scroll.set(self.workspace_scroll.get() + 1);
+            }
+            KeyCode::Up if self.config.show_plan => {
+                self.workspace_scroll
+                    .set(self.workspace_scroll.get().saturating_sub(1));
+            }
+            KeyCode::Home if self.config.show_plan => self.workspace_scroll.set(0),
             KeyCode::Char('h') => {
                 self.planner.refresh();
                 self.overlay = Overlay::Planner(crate::planning::Panel::character());

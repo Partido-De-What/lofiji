@@ -3,7 +3,6 @@ use crate::{
     config::{hex_color, ClockPalette},
     input::TextInput,
     layout::Composition,
-    planner::{Kind, Store},
     planning::{Conversation, Panel},
     theme::*,
     ui::{overlay_area, panel, text},
@@ -91,8 +90,7 @@ pub fn input_line(f: &mut Frame, area: Rect, input: &TextInput, color: Color) {
     );
     f.set_cursor(area.x + columns as u16, area.y);
 }
-pub fn goals(f: &mut Frame, view: &Panel, store: &Store, palette: &ClockPalette) {
-    let [accent, secondary, body, muted] = colors(palette);
+pub fn goals(f: &mut Frame, app: &crate::app::App, view: &Panel, date: chrono::NaiveDate) {
     let area = overlay_area(f, 82, 27);
     panel(f, area, "GOALS & NEXT STEPS");
     if area.width < 28 || area.height < 10 {
@@ -102,220 +100,73 @@ pub fn goals(f: &mut Frame, view: &Panel, store: &Store, palette: &ClockPalette)
             area.y + 2,
             area.width.saturating_sub(2),
             "Resize for goals · Esc close",
-            muted,
+            MUTED,
             Alignment::Left,
         );
         return;
     }
-    if let Some(editor) = &view.editor {
-        let kind = match editor.entry.kind {
-            Kind::Task => "task",
-            Kind::Short => "short-term goal",
-            Kind::Long => "long-term goal",
-            Kind::Character => "character reminder",
-        };
-        text(
-            f,
-            area.x + 2,
-            area.y + 2,
-            area.width - 4,
-            format!(
-                "{} {kind}",
-                if editor.entry.id == 0 { "New" } else { "Edit" }
-            ),
-            body,
-            Alignment::Left,
-        );
-        let labels = [
-            "Title",
-            "Linked goal · ←→ choose",
-            "Due date · YYYY-MM-DD or blank",
-            "Priority · ←→ choose",
-        ];
-        let values = [
-            editor.title.value.clone(),
-            editor
-                .entry
-                .parent
-                .and_then(|id| store.data.entry(id))
-                .map(|e| e.title.clone())
-                .unwrap_or_else(|| "No linked goal".into()),
-            editor.due.value.clone(),
-            editor.entry.priority.label().into(),
-        ];
-        let fields = if editor.entry.kind == Kind::Character {
-            vec![0]
-        } else if area.height >= 22 {
-            (0..4).collect::<Vec<_>>()
-        } else {
-            vec![editor.field]
-        };
-        for (row, field) in fields.into_iter().enumerate() {
-            let y = area.y + 4 + row as u16 * 3;
-            let active = field == editor.field;
-            text(
-                f,
-                area.x + 2,
-                y,
-                area.width - 4,
-                format!("{} {}", if active { "›" } else { " " }, labels[field]),
-                if active { secondary } else { muted },
-                Alignment::Left,
-            );
-            if active && (field == 0 || field == 2) {
-                input_line(
-                    f,
-                    Rect::new(area.x + 4, y + 1, area.width - 8, 1),
-                    if field == 0 {
-                        &editor.title
-                    } else {
-                        &editor.due
-                    },
-                    body,
-                );
-            } else {
-                text(
-                    f,
-                    area.x + 4,
-                    y + 1,
-                    area.width - 8,
-                    clipped(&values[field], area.width - 8),
-                    body,
-                    Alignment::Left,
-                );
-            }
-        }
-        text(
-            f,
-            area.x + 2,
-            area.bottom() - 4,
-            area.width - 4,
-            view.error
-                .as_deref()
-                .unwrap_or("Enter saves · Tab / Shift-Tab selects a field"),
-            if view.error.is_some() { PINK } else { muted },
-            Alignment::Left,
-        );
-        text(
-            f,
-            area.x + 2,
-            area.bottom() - 3,
-            area.width - 4,
-            "←→ choose links/priority · Ctrl-U clears text · Esc cancels",
-            accent,
-            Alignment::Left,
-        );
-        return;
-    }
-    if area.width < 62 {
-        text(
-            f,
-            area.x + 2,
-            area.y + 2,
-            area.width - 4,
-            format!("← {} →", view.kind.label()),
-            secondary,
-            Alignment::Left,
-        );
-    } else {
-        let tabs = Kind::OBJECTIVES
-            .into_iter()
-            .map(|kind| {
-                Span::styled(
-                    format!("  {}  ", kind.label()),
-                    Style::default().fg(if kind == view.kind { secondary } else { muted }),
-                )
-            })
-            .collect::<Vec<_>>();
-        f.render_widget(
-            Paragraph::new(Line::from(tabs)),
-            Rect::new(area.x + 2, area.y + 2, area.width - 4, 1),
-        );
-    }
-    let entries = view.entries(&store.data, chrono::Local::now().date_naive());
-    let visible = usize::from(area.height.saturating_sub(9) / 2).max(1);
-    let first = (view.selected + 1).saturating_sub(visible);
-    if entries.is_empty() {
-        text(
-            f,
-            area.x + 3,
-            area.y + 5,
-            area.width - 6,
-            "Nothing here yet. Press + to add one.",
-            body,
-            Alignment::Left,
-        );
-    }
-    for (i, entry) in entries.iter().enumerate().skip(first).take(visible) {
-        let y = area.y + 4 + (i - first) as u16 * 2;
-        if i == view.selected {
-            f.buffer_mut().set_style(
-                Rect::new(area.x + 1, y, area.width - 2, 2),
-                Style::default().bg(SURFACE),
-            );
-        }
-        let title = format!(
-            "{} [{}] #{} {}",
-            if i == view.selected { "›" } else { " " },
-            if entry.done { "x" } else { " " },
-            entry.id,
-            entry.title
-        );
-        text(
-            f,
-            area.x + 2,
-            y,
-            area.width - 4,
-            clipped(&title, area.width - 4),
-            if entry.done { muted } else { body },
-            Alignment::Left,
-        );
-        let mut context = vec![entry.priority.label().to_owned()];
-        if let Some(due) = &entry.due {
-            context.push(format!("due {due}"));
-        }
-        if let Some(parent) = entry.parent.and_then(|id| store.data.entry(id)) {
-            context.push(format!("→ {}", parent.title));
-        }
-        text(
-            f,
-            area.x + 6,
-            y + 1,
-            area.width - 8,
-            clipped(&context.join(" · "), area.width - 8),
-            muted,
-            Alignment::Left,
-        );
-    }
-    let error = view.error.as_deref().or(store.error.as_deref());
-    text(
+    crate::dashboard::entries(
         f,
-        area.x + 2,
-        area.bottom() - 4,
-        area.width - 4,
-        error.unwrap_or("+ add · Enter edit · Space complete/reopen · p priority"),
-        if error.is_some() { PINK } else { body },
-        Alignment::Left,
-    );
-    text(
-        f,
-        area.x + 2,
-        area.bottom() - 3,
-        area.width - 4,
-        "←→ category · ↑↓ select · x archive · u undo · Esc close",
-        accent,
-        Alignment::Left,
-    );
-    text(
-        f,
-        area.x + 2,
-        area.bottom() - 2,
-        area.width - 4,
-        "Saved locally · c on the clock opens Plan with me",
-        muted,
-        Alignment::Left,
+        app,
+        view,
+        Rect::new(area.x + 2, area.y + 2, area.width - 4, area.height - 3),
+        date,
     );
 }
+
+pub(crate) fn wrapped_input(
+    f: &mut Frame,
+    area: Rect,
+    input: &TextInput,
+    active: bool,
+    color: Color,
+) {
+    let width = usize::from(area.width);
+    if width == 0 || area.height == 0 {
+        return;
+    }
+    let mut rows = vec![String::new()];
+    let mut columns = 0;
+    let mut cursor = (0, 0);
+    for (index, ch) in input.value.char_indices() {
+        let step = Line::from(ch.to_string()).width();
+        if columns + step > width {
+            rows.push(String::new());
+            columns = 0;
+        }
+        if index == input.cursor {
+            cursor = (rows.len() - 1, columns);
+        }
+        rows.last_mut().unwrap().push(ch);
+        columns += step;
+    }
+    if input.cursor == input.value.len() {
+        if columns == width {
+            rows.push(String::new());
+            columns = 0;
+        }
+        cursor = (rows.len() - 1, columns);
+    }
+    let start = if active {
+        (cursor.0 + 1).saturating_sub(usize::from(area.height))
+    } else {
+        0
+    };
+    let visible: Vec<_> = rows
+        .into_iter()
+        .skip(start)
+        .take(usize::from(area.height))
+        .map(Line::from)
+        .collect();
+    f.render_widget(
+        Paragraph::new(visible).style(Style::default().fg(color)),
+        area,
+    );
+    if active {
+        f.set_cursor(area.x + cursor.1 as u16, area.y + (cursor.0 - start) as u16);
+    }
+}
+
 pub(crate) const WAIT_FRAME_MS: u64 = 125;
 
 pub(crate) fn chat_status(
@@ -463,6 +314,11 @@ pub(crate) fn wrap_lines(value: &str, width: usize) -> Vec<String> {
         if !current.is_empty() {
             current.push(' ');
             columns += 1;
+        }
+        if size <= width {
+            current.push_str(word);
+            columns += size;
+            continue;
         }
         for ch in word.chars() {
             let step = Line::from(ch.to_string()).width();

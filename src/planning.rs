@@ -10,21 +10,45 @@ pub struct Editor {
     pub entry: Entry,
     pub title: TextInput,
     pub due: TextInput,
-    pub field: usize,
+    pub description: TextInput,
+    field: usize,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Title,
+    Description,
+    Link,
+    Due,
+    Priority,
+}
+
 impl Editor {
     fn new(entry: Entry) -> Self {
         Self {
             title: TextInput::new(entry.title.clone()),
             due: TextInput::new(entry.due.clone().unwrap_or_default()),
+            description: TextInput::new(entry.description.clone()),
             entry,
             field: 0,
         }
     }
-    pub fn active_input(&mut self) -> Option<&mut TextInput> {
-        match self.field {
-            0 => Some(&mut self.title),
-            2 => Some(&mut self.due),
+    pub fn fields(&self) -> &'static [Field] {
+        use Field::*;
+        match self.entry.kind {
+            Kind::Task => &[Title, Description, Link, Due, Priority],
+            Kind::Character => &[Title],
+            _ => &[Title, Link, Due, Priority],
+        }
+    }
+    pub fn active_field(&self) -> Field {
+        self.fields()[self.field]
+    }
+    fn active_input(&mut self) -> Option<&mut TextInput> {
+        match self.active_field() {
+            Field::Title => Some(&mut self.title),
+            Field::Description => Some(&mut self.description),
+            Field::Due => Some(&mut self.due),
             _ => None,
         }
     }
@@ -82,8 +106,13 @@ impl Panel {
     }
     pub fn paste(&mut self, text: &str) {
         if let Some(editor) = &mut self.editor {
+            let description = editor.active_field() == Field::Description;
             if let Some(input) = editor.active_input() {
-                input.insert(text);
+                if description {
+                    input.insert(&text.split_whitespace().collect::<Vec<_>>().join(" "));
+                } else {
+                    input.insert(text);
+                }
             }
         }
     }
@@ -108,25 +137,15 @@ impl Panel {
                     self.error = None;
                     return self.quick;
                 }
-                KeyCode::Tab => {
-                    editor.field = (editor.field + 1)
-                        % if editor.entry.kind == Kind::Character {
-                            1
-                        } else {
-                            4
-                        }
-                }
-                KeyCode::BackTab => {
-                    editor.field = (editor.field + 3)
-                        % if editor.entry.kind == Kind::Character {
-                            1
-                        } else {
-                            4
-                        }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    let len = editor.fields().len();
+                    let step = if key.code == KeyCode::Tab { 1 } else { len - 1 };
+                    editor.field = (editor.field + step) % len;
                 }
                 KeyCode::Enter => {
                     let mut entry = editor.entry.clone();
                     entry.title = editor.title.value.trim().into();
+                    entry.description = editor.description.value.trim().into();
                     entry.due = (!editor.due.value.trim().is_empty())
                         .then(|| editor.due.value.trim().to_owned());
                     match store.put(entry) {
@@ -145,10 +164,10 @@ impl Panel {
                         Err(e) => self.error = Some(e),
                     }
                 }
-                KeyCode::Left | KeyCode::Right if editor.field == 1 => {
+                KeyCode::Left | KeyCode::Right if editor.active_field() == Field::Link => {
                     editor.cycle_parent(&store.data, key.code == KeyCode::Right)
                 }
-                KeyCode::Left | KeyCode::Right if editor.field == 3 => {
+                KeyCode::Left | KeyCode::Right if editor.active_field() == Field::Priority => {
                     editor.entry.priority = if key.code == KeyCode::Right {
                         editor.entry.priority.next()
                     } else {

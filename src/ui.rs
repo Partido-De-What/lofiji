@@ -505,7 +505,7 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
     match &app.overlay {
         Overlay::None => {}
         Overlay::Planner(view) if workspace_area.map_or(true, |area| area.height < 6) => {
-            crate::planning_ui::goals(f, view, &app.planner, app.config.palette())
+            crate::planning_ui::goals(f, app, view, wall.date_naive())
         }
         Overlay::Conversation(view) if workspace_area.map_or(true, |area| area.height < 6) => {
             crate::planning_ui::conversation(
@@ -562,6 +562,7 @@ pub(crate) const HELP_LINES: &[&str] = &[
     "Chat: Ctrl+K cancels reply · Ctrl+N starts new",
     "Ctrl+E  Change thinking effort in Talk, when supported",
     "Tasks: f switches between pending and completed",
+    "Workspace: ↑↓ scroll · Home returns to the top",
     "Music requires mpv and yt-dlp.",
     "Hiding Pomodoro keeps the timer running.",
 ];
@@ -1258,6 +1259,58 @@ mod tests {
             assert!(row.trim_start().starts_with('h'), "{w}x{h}: {row}");
             assert!(row.trim_end().ends_with(action), "{w}x{h}: {row}");
             assert!(row.find('+').unwrap() < row.rfind(action).unwrap());
+        }
+    }
+    #[test]
+    fn dashboard_wraps_task_titles_and_scrolls_to_unlinked_goals() {
+        use crate::planner::{Entry, Kind};
+        use chrono::TimeZone;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let wall = Local.with_ymd_and_hms(2026, 11, 17, 22, 48, 7).unwrap();
+        let mut app = App::new(Config::default(), PathBuf::new());
+        let mut task = Entry::blank(Kind::Task);
+        task.title = "Write the first section before reviewing the final paragraph".into();
+        app.planner.put(task).unwrap();
+        for (kind, prefix) in [(Kind::Short, "Short-goal"), (Kind::Long, "Long-goal")] {
+            for index in 1..=12 {
+                let mut goal = Entry::blank(kind);
+                goal.title = format!("{prefix}-{index:02}");
+                app.planner.put(goal).unwrap();
+            }
+        }
+        let mut archived = Entry::blank(Kind::Long);
+        archived.title = "Archived-goal".into();
+        archived.archived = true;
+        app.planner.put(archived).unwrap();
+
+        for (w, h) in [(120, 36), (60, 17)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            let now = app.started;
+            app.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), now);
+            terminal.draw(|f| render(f, &app, wall, now)).unwrap();
+            let screen = crate::preview::plain(terminal.backend().buffer());
+            let first = screen
+                .lines()
+                .position(|row| row.contains("Write the first"))
+                .unwrap();
+            let last = screen
+                .lines()
+                .position(|row| row.contains("final paragraph"))
+                .unwrap();
+            assert!(last > first);
+
+            let mut seen = screen;
+            for _ in 0..30 {
+                app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), now);
+                terminal.draw(|f| render(f, &app, wall, now)).unwrap();
+                seen.push_str(&crate::preview::plain(terminal.backend().buffer()));
+            }
+            for prefix in ["Short-goal", "Long-goal"] {
+                for index in 1..=12 {
+                    assert!(seen.contains(&format!("{prefix}-{index:02}")));
+                }
+            }
+            assert!(!seen.contains("Archived-goal"));
         }
     }
     #[test]
