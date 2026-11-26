@@ -2,25 +2,26 @@
 
 **A small pocket of quiet for your terminal.**
 
-Lofiji is a Linux desk clock with lofi pixel-art scenes, a Pomodoro timer, and a small space for deciding what to do next. It’s built for people who spend much of their day in a terminal and want the time, their next task, and a little atmosphere in the same window.
+Lofiji is a Linux terminal desk clock with animated pixel-art scenes. Leave it open for the time and a little atmosphere, or use the workspace beneath the clock to plan your next step and start a focus session.
 
 **Work in progress.** The core clock and workspace are usable. Expect the interface and setup to evolve.
 
-![Lofiji showing the clock, character reminders, tasks, and objectives against a pixel-art bonfire](docs/plan.png)
+![Lofiji showing a large clock above character reminders, tasks, and objectives in the Rain Room scene](docs/plan.png)
 
 ## What you can do with it
 
 | If you’re… | Try this |
 | --- | --- |
-| **Studying or writing** | Open Pomodoro with **p**, start a focus session with **Space**, and mix a little rain or café noise with **a**. |
-| **Juggling a project and a deadline** | Capture a task with **+**, press **Tab** to add a description, and manage goals and deadlines with **g**. Lofiji puts overdue and due-today work near the top. |
+| **Studying or writing** | Open Pomodoro with **p** and start with **Space**. To focus on a specific task, select it under **g** and press **F**. When the session ends, press **y** to complete the task or **Esc** to keep it open. |
+| **Juggling a project and a deadline** | Capture a task with **+** and press **Tab** for a description. The dashboard puts overdue and due-today tasks first, wraps long titles, and lists active short- and long-term goals. Scroll with **↑/↓**. |
 | **Building a habit** | Use **h** to keep a short character reminder in sight, such as “Listen before responding.” Pause it when it no longer needs your attention. |
 | **Looking for a next step** | Open **Talk** with **c** for local guidance or optional AI chat. With a provider connected, **d** asks for one concrete first action on your top pending task and may suggest a relevant app shortcut. |
-| **Keeping a clock on a second screen** | Press **v** for clock-only view. Cycle pixel-art scenes with **b** and clock styles with **t**. You can also use your own PNG or GIF. |
+| **Setting the mood** | Press **a** to mix ambience and **v** inside the mixer to audition it. Keys **1–3** load Hearth, Café, or Forest. Volume changes keep the loops playing, and **Esc** restores the previous mix. |
+| **Keeping a clock on a second screen** | Press **v** on the clock screen for clock-only view. Cycle scenes with **b** or clock styles with **t**. Preview palettes, brightness, and dashboard opacity in **Settings → Appearance**. Custom PNGs and GIFs are supported. |
 
 The clock, bundled scenes, timer, and planner work offline. Ambient loops work offline with **mpv**. YouTube playback is optional and requires **mpv**, **yt-dlp**, and **Node.js**.
 
-![Rainy terminal clock with a running Pomodoro focus timer](docs/pomodoro.png)
+![A seven-segment clock above a running Pomodoro countdown in the Moonlit City scene](docs/pomodoro.png)
 
 [Scene gallery](docs/scenes.png) · [Rain Room](docs/rain-room.png) · [Compact view](docs/plan-compact.png) · [Sound mixer](docs/sounds.png) · [Talk view](docs/conversation.png)
 
@@ -34,13 +35,13 @@ cd lofiji
 cargo run --release --locked
 ```
 
-Press **?** for shortcuts and **s** for settings. The [user guide](docs/usage.md) covers customization, audio, and optional launch at desktop login.
+Press **?** for shortcuts and **s** for settings. Save settings with **Ctrl+S**. The user guide covers customization, audio, and optional launch at desktop login. [User guide](docs/usage.md)
 
 ## Optional AI
 
 Lofiji supports **ChatGPT plan sign-in**, **OpenAI API**, **Anthropic Claude**, **Google Gemini**, **Ollama**, **OpenRouter**, and **OpenAI-compatible endpoints**. Choose one under **Settings → AI**. For Claude or Gemini, enter a model ID available to your account and supply the API key through an environment variable. [AI setup and provider requirements](docs/ai.md)
 
-AI starts off. Goals, tasks, and reminders are saved locally. When you use a cloud model, Lofiji sends relevant planner entries and recent chat as context. Model replies can suggest actions, and you decide what to save.
+AI starts off. Goals, tasks, and reminders are saved locally. A daily suggestion can run while you chat, and **Ctrl+K** cancels the current chat reply. Cloud requests include relevant planner entries, including task descriptions. Talk also sends recent chat. You decide which suggested changes to save.
 
 ## Development
 
