@@ -7,14 +7,14 @@ import json
 import os
 from pathlib import Path
 import pty
-import select
 import signal
 import struct
 import subprocess
 import tempfile
 import termios
-import time
 import zlib
+
+from pty_support import read_output, terminate, wait_for, wait_output
 
 ROOT=Path(__file__).resolve().parents[1]
 BIN=ROOT/'target/debug/lofiji'
@@ -31,13 +31,27 @@ with tempfile.TemporaryDirectory(prefix='lofiji-features-') as tmp:
     tmp=Path(tmp);config=tmp/'config.toml';image=tmp/'café.png';png(image)
     helper=tmp/'yt-dlp';helper.write_text('#!/bin/sh\nexit 0\n');helper.chmod(0o755)
     player=tmp/'mpv';player.write_text('''#!/usr/bin/python3
-import json,os,pathlib,subprocess,sys,time
+import json,os,pathlib,socket,subprocess,sys,time
 child=subprocess.Popen(['/usr/bin/sleep','120'])
 target=pathlib.Path(os.environ['LOFIJI_TEST_PLAYER'])
-if sys.argv[-1].endswith('.ogg'): target=target.parent/f'sound-{os.getpid()}.json'
-target.write_text(json.dumps({'pid':os.getpid(),'child':child.pid,'group':os.getpgrp(),'args':sys.argv[1:]}))
-print('LOFIJI_AUDIO_READY', flush=True)
-time.sleep(120)
+ipc = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--input-ipc-server=')), None)
+if ipc:
+    target=target.parent/f'sound-{os.getpid()}.json'
+    server=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(ipc)
+    server.listen()
+record=target.with_suffix('.tmp')
+record.write_text(json.dumps({'pid':os.getpid(),'child':child.pid,'group':os.getpgrp(),'args':sys.argv[1:]}))
+record.replace(target)
+if ipc:
+    while True:
+        conn, _ = server.accept()
+        with conn:
+            message = json.loads(conn.makefile().readline())
+        target.with_suffix('.volume').write_text(str(message['command'][2]))
+else:
+    print('LOFIJI_AUDIO_READY', flush=True)
+    time.sleep(120)
 ''');player.chmod(0o755)
     env=os.environ.copy();env['PATH']=str(tmp)+':'+env['PATH'];env['LOFIJI_TEST_PLAYER']=str(tmp/'player.json')
     legacy_root=tmp/'legacy-config';legacy=(legacy_root/'nekoji');legacy.mkdir(parents=True)
@@ -52,32 +66,32 @@ time.sleep(120)
     master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',36,120,0,0))
     baseline=termios.tcgetattr(slave)
     proc=subprocess.Popen([str(BIN),'--config',str(config)],stdin=slave,stdout=slave,stderr=slave,env=env)
-    def drain(seconds=.2):
-        end=time.monotonic()+seconds;out=bytearray()
-        while time.monotonic()<end:
-            if select.select([master],[],[],max(0,end-time.monotonic()))[0]:
-                try:out.extend(os.read(master,65536))
-                except OSError:break
-        return bytes(out)
-    def send(data):os.write(master,data);return drain()
+    def send(data):
+        os.write(master, data)
+        return read_output(master, .5)
     try:
-        assert b'\x1b[?2004h' in drain(.3),'bracketed paste not enabled'
+        wait_output(master, b'\x1b[?2004h')
         assert not (tmp/'player.json').exists(),'music must start off'
-        send(b'b');assert 'background = "city"' in config.read_text()
-        send(b's\r'+b'\x1b[B'*5+b'\r')
+        send(b'b')
+        wait_for(master, lambda: config.exists() and 'background = "city"' in config.read_text())
+        os.write(master,b's\r'+b'\x1b[B'*5+b'\r')
+        wait_output(master, b'\x1b[?25h')
         send(b'\x1b[200~'+str(image).encode()+b'\x1b[201~')
-        send(b'\r'+b'\x1b[A'+b' '*4+b'\x13')
-        text=config.read_text();assert 'background = "image"' in text and 'café.png' in text,text
+        os.write(master,b'\r'+b'\x1b[A'+b' '*5+b'\x13')
+        wait_for(master, lambda: 'background = "image"' in config.read_text() and 'café.png' in config.read_text())
+        text=config.read_text()
         config.write_text(text.replace(str(image),image.name))
         subprocess.run([str(BIN),'--config',str(config),'--snapshot','40x12'],stdout=subprocess.DEVNULL,check=True)
         config.write_text(text)
         assert proc.poll() is None,'PNG selection crashed'
         send(b'sjj\r\r')
         send(b'\x1b');send(b'\x1b');send(b'\x1b')
-        send(b'b');assert 'background = "window"' in config.read_text(),'Escape must close editor and settings'
+        send(b'b')
+        wait_for(master, lambda: 'background = "window"' in config.read_text())
 
         # Mix three local layers, including the new fireplace; changing one must preserve the other voice.
-        send(b'a '+b'\x1b[B'+b' '+b'\x1b[B'+b' '+b'\r');drain(.2)
+        send(b'a '+b'\x1b[B'+b' '+b'\x1b[B'+b' '+b'\r')
+        wait_for(master, lambda: len(list(tmp.glob('sound-*.json'))) == 3)
         sound_records=[json.loads(p.read_text()) for p in tmp.glob('sound-*.json')]
         assert len(sound_records)==3 and all(alive(r['pid']) for r in sound_records),'layers did not overlap'
         sound_paths=[Path(r['args'][-1]) for r in sound_records]
@@ -85,39 +99,46 @@ time.sleep(120)
         for r in sound_records:
             assert r['pid']==r['group'] and '--loop-file=inf' in r['args']
         fire=next(r for r in sound_records if r['args'][-1].endswith('/0.ogg'))
-        rain=next(r for r in sound_records if r['args'][-1].endswith('/1.ogg'))
         fireplace=next(r for r in sound_records if r['args'][-1].endswith('/10.ogg'))
         assert '--volume=25' in fireplace['args'],'fireplace level not applied'
-        send(b'a'+b'\x1b[C'+b'\r');drain(.15)
-        assert alive(rain['pid']) and alive(fireplace['pid']) and not alive(fire['pid']),'changing fire restarted rain or left the old voice'
-        sound_records=[json.loads(p.read_text()) for p in tmp.glob('sound-*.json')]
-        assert any(alive(r['pid']) and '--volume=30' in r['args'] for r in sound_records),'new layer volume not applied'
-        send(b'z');assert all(not alive(r['pid']) and not alive(r['child']) for r in sound_records),'mute left an audio child'
-        send(b'z');drain(.2)
+        send(b'a'+b'\x1b[C')
+        level=tmp/f"sound-{fire['pid']}.volume"
+        wait_for(master, lambda: level.exists() and level.read_text() == '30')
+        assert all(alive(r['pid']) for r in sound_records), 'audition restarted a voice'
+        send(b'\x1b')
+        wait_for(master, lambda: level.read_text() == '25')
+        send(b'a'+b'\x1b[C'+b'\r')
+        wait_for(master, lambda: level.read_text() == '30')
+        assert all(alive(r['pid']) for r in sound_records), 'saving restarted a voice'
+        send(b'z')
+        wait_for(master, lambda: all(not alive(r['pid']) and not alive(r['child']) for r in sound_records))
+        send(b'z')
+        wait_for(master, lambda: len(list(tmp.glob('sound-*.json'))) == 6)
         resumed=[json.loads(p.read_text()) for p in tmp.glob('sound-*.json') if alive(json.loads(p.read_text())['pid'])]
         assert len(resumed)==3,'saved mix did not resume'
 
         for ending in ['toggle','quit']:
-            output=send(b'm');record=json.loads((tmp/'player.json').read_text())
-            output+=drain(.15)
-            assert b'Music playing' in output, 'audio readiness was not reported'
+            record_path=tmp/'player.json'
+            record_path.unlink(missing_ok=True)
+            os.write(master,b'm')
+            output=wait_output(master,b'Music playing', visible=True)
+            record=json.loads(record_path.read_text())
             assert b'LOFIJI_AUDIO_READY' not in output, 'raw player output leaked'
             assert record['pid']==record['group'],'player must have its own process group'
             assert record['args'][-2:] == ['--','https://www.youtube.com/watch?v=DEWzT1geuPU']
             assert '--no-video' in record['args']
             output=send(b'm' if ending=='toggle' else b'q')
-            for _ in range(20):
-                if not alive(record['pid']) and not alive(record['child']):break
-                time.sleep(.05)
-            assert not alive(record['pid']) and not alive(record['child']),'orphan player/helper'
+            output+=wait_for(master, lambda: not alive(record['pid']) and not alive(record['child']))
+            if ending == 'quit' and b'\x1b[?2004l' not in output:
+                output+=wait_output(master, b'\x1b[?2004l')
         assert proc.wait(timeout=2)==0
         assert all(not alive(r['pid']) and not alive(r['child']) for r in resumed),'quit left ambient audio playing'
         assert all(not p.exists() for p in sound_paths),'temporary sound assets were not removed'
         assert proc.wait(timeout=2)==0
-        output+=drain(.15)
+        output+=read_output(master, .1)
         assert b'\x1b[?2004l' in output,'bracketed paste not restored'
         assert termios.tcgetattr(slave)==baseline,'terminal flags not restored'
         print('PASS: persistent scenes, PNG Unicode paste/editor, layered ambient audio, music readiness, owned-process cleanup')
     finally:
-        if proc.poll() is None:proc.terminate();proc.wait(timeout=3)
+        terminate(master, proc)
         os.close(master);os.close(slave)

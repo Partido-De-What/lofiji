@@ -5,6 +5,8 @@ show_seconds = true
 # A quiet local daily plan under the clock; v toggles it.
 # Show character reminders, tasks/objectives and conversation below the clock.
 show_plan = true
+# 0 (transparent scene) to 100 (solid background)
+dashboard_opacity = 75
 blink_separator = true
 animations = true
 # clear / rain / snow

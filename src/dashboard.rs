@@ -32,16 +32,25 @@ fn line(f: &mut Frame, area: Rect, row: u16, value: impl Into<String>, color: Co
     }
 }
 
-pub fn render(f: &mut Frame, app: &App, area: Rect, date: NaiveDate, elapsed: std::time::Duration) {
-    let [accent, secondary, body, muted] = colors(app.config.palette());
-    // Keep the scene visible at low contrast behind the workspace text.
+pub fn render(
+    f: &mut Frame,
+    app: &App,
+    config: &crate::config::Config,
+    area: Rect,
+    date: NaiveDate,
+    elapsed: std::time::Duration,
+) {
+    let [accent, secondary, body, muted] = colors(config.palette());
+    let opacity = u16::from(config.dashboard_opacity.min(100));
+    // Keep the scene visible behind the workspace text according to dashboard opacity.
     for y in area.y..area.bottom() {
         for x in area.x..area.right() {
             let cell = f.buffer_mut().get_mut(x, y);
             let backing = match (cell.bg, crate::theme::BG) {
                 (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) => {
                     let blend = |scene: u8, theme: u8| {
-                        ((u16::from(scene) + 3 * u16::from(theme)) / 4) as u8
+                        ((u16::from(scene) * (100 - opacity) + u16::from(theme) * opacity) / 100)
+                            as u8
                     };
                     Color::Rgb(blend(r, br), blend(g, bg), blend(b, bb))
                 }
@@ -221,7 +230,7 @@ fn overview(
         if reminders.is_empty() {
             push_wrapped(&mut columns[0], "h then + adds a reminder", muted);
         }
-        for reminder in reminders.iter().take(4) {
+        for reminder in &reminders {
             push_wrapped(&mut columns[0], &format!("· {}", reminder.title), body);
         }
     }
@@ -262,9 +271,6 @@ fn overview(
             .first()
             .map_or("h then + to add a reminder", |entry| entry.title.as_str());
         push_wrapped(&mut columns[0], &format!("Character · {reminder}"), body);
-        if let Some(step) = next_step.filter(|_| area.height < 4) {
-            push_wrapped(&mut columns[0], &format!("AI next step · {step}"), body);
-        }
     }
 
     for (kind, label) in [(Kind::Short, "Short term"), (Kind::Long, "Long term")] {
@@ -285,9 +291,19 @@ fn overview(
     if wide && columns[goal_column].1.is_empty() {
         push_wrapped(&mut columns[goal_column], "g opens objectives", muted);
     }
-    let advice_rows = u16::from(next_step.is_some() && area.height >= 4)
-        + u16::from(tip.is_some() && area.height >= 6);
-    let rows = columns[0].0.height.saturating_sub(advice_rows);
+    let mut advice = (area, Vec::new());
+    if let Some(step) = next_step {
+        push_wrapped(&mut advice, &format!("AI next step · {step}"), body);
+    }
+    if let Some(tip) = tip {
+        push_wrapped(&mut advice, &format!("Tip · {tip}"), body);
+    }
+    let body_height = columns[0].0.height;
+    if advice.1.len() > usize::from(body_height / 2) {
+        columns[task_column].1.append(&mut advice.1);
+    }
+    let advice_rows = advice.1.len() as u16;
+    let rows = body_height - advice_rows;
     let longest = columns
         .iter()
         .map(|(_, lines)| lines.len())
@@ -323,13 +339,10 @@ fn overview(
         );
     }
     if advice_rows > 0 {
-        let row = area.height - advice_rows;
-        if let Some(step) = next_step {
-            line(f, area, row, format!("AI next step · {step}"), body);
-        }
-        if let Some(tip) = tip.filter(|_| advice_rows == 2) {
-            line(f, area, row + 1, format!("Tip · {tip}"), body);
-        }
+        f.render_widget(
+            Paragraph::new(advice.1),
+            Rect::new(area.x, area.bottom() - advice_rows, area.width, advice_rows),
+        );
     }
     ai_action
 }
@@ -378,13 +391,16 @@ pub(crate) fn entries(
                 Field::Due => ("Due date · YYYY-MM-DD or blank", Some(&editor.due)),
                 Field::Priority => ("Priority · ←→ choose", None),
             };
-            line(
-                f,
-                area,
-                y,
-                format!("{} {label}", if selected { "›" } else { " " }),
-                secondary,
-            );
+            let heading = if full {
+                format!("{} {label}", if selected { "›" } else { " " })
+            } else {
+                let index = all_fields
+                    .iter()
+                    .position(|item| *item == field)
+                    .unwrap_or(0);
+                format!("{}/{} · {label}", index + 1, all_fields.len())
+            };
+            line(f, area, y, heading, secondary);
             let wrapped = field == Field::Description
                 || (field == Field::Title && editor.entry.kind == Kind::Task);
             let height = if wrapped {
@@ -572,7 +588,7 @@ pub(crate) fn entries(
             } else if view.kind == Kind::Task && view.completed {
                 "Enter edit · Space reopen · x archive · u undo"
             } else {
-                "+ add · Enter edit · Space complete · x archive · u undo"
+                "+ add · Enter edit · F focus · Space complete · x archive · u undo"
             },
             muted,
         );
@@ -585,7 +601,11 @@ pub(crate) fn entries(
             .as_deref()
             .or(app.planner.error.as_deref())
             .unwrap_or(if task_view {
-                "Esc back · ↑↓ select · ←→ goals"
+                if view.completed {
+                    "Esc back · ↑↓ select · ←→ goals"
+                } else {
+                    "Esc back · ↑↓ select · ←→ goals · F focus"
+                }
             } else {
                 "Esc back · ↑↓ select"
             }),

@@ -5,14 +5,14 @@ import os
 from pathlib import Path
 import pty
 import re
-import select
 import signal
 import struct
 import subprocess
 import tempfile
 import termios
-import time
 import tomllib
+
+from pty_support import read_output, terminate, wait_output
 
 ROOT=Path(__file__).resolve().parents[1]
 BIN=ROOT/'target/debug/lofiji'
@@ -21,24 +21,21 @@ with tempfile.TemporaryDirectory(prefix='lofiji-planner-pty-') as tmp:
     master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
     baseline=termios.tcgetattr(slave)
     def launch():return subprocess.Popen([str(BIN),'--config',str(config)],stdin=slave,stdout=slave,stderr=slave)
-    def drain(seconds=.15):
-        end=time.monotonic()+seconds;out=bytearray()
-        while time.monotonic()<end:
-            if select.select([master],[],[],max(0,end-time.monotonic()))[0]:out.extend(os.read(master,65536))
-        return bytes(out)
-    def send(keys):os.write(master,keys);return drain()
+    def send(keys):
+        os.write(master, keys)
+        return read_output(master, .5)
     def redraw():
         # A full frame avoids matching phrases split across VT cell updates.
         fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',25,80,0,0))
-        os.kill(proc.pid,signal.SIGWINCH);drain(.1)
+        os.kill(proc.pid,signal.SIGWINCH);read_output(master, .5)
         fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
         os.kill(proc.pid,signal.SIGWINCH)
-        return drain(.15)
+        return read_output(master, .5)
     def paste(text):return send(b'\x1b[200~'+text.encode()+b'\x1b[201~')
     def entries():return tomllib.loads(data.read_text())['entries']
     proc=launch()
     try:
-        drain(.3);send(b'+');paste('Review equations in 東京');send(b'\t')
+        wait_output(master, b"\x1b[?2004h");send(b'+');paste('Review equations in 東京');send(b'\t')
         paste('Compare the proof with the café notes.');send(b'\r')
         assert entries()[0]['title']=='Review equations in 東京' and proc.poll() is None,'q or Unicode broke task entry'
         assert entries()[0]['description']=='Compare the proof with the café notes.'
@@ -77,14 +74,14 @@ with tempfile.TemporaryDirectory(prefix='lofiji-planner-pty-') as tmp:
         assert len(entries())==6
         send(b'\x1b');send(b'q');assert proc.wait(timeout=2)==0
         assert termios.tcgetattr(slave)==baseline
-        proc=launch();out=re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]',b'',drain(.3));assert b'Ask a question' in out,'opening reminder did not reload saved tasks: '+repr(out[-2000:])
+        proc=launch();out=re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]',b'',wait_output(master,b'Ask a question', visible=True));assert b'Ask a question' in out,'opening reminder did not reload saved tasks: '+repr(out[-2000:])
         send(b'q');assert proc.wait(timeout=2)==0
         data.write_text('broken = [')
-        proc=launch();drain(.3);send(b'+');paste('Do not overwrite');send(b'\r')
+        proc=launch();wait_output(master, b"\x1b[?2004h");send(b'+');paste('Do not overwrite');send(b'\r')
         assert data.read_text()=='broken = [','malformed planner was overwritten'
         send(b'\x1b');send(b'\x1b');send(b'q');assert proc.wait(timeout=2)==0
         assert termios.tcgetattr(slave)==baseline
         print('PASS: inline workspace, character reminders/pause/archive, linked goals, deadlines/priority, Unicode editing, local chat, persistence and corruption protection')
     finally:
-        if proc.poll() is None:proc.terminate();proc.wait(timeout=3)
+        terminate(master, proc)
         os.close(master);os.close(slave)

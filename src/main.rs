@@ -286,14 +286,13 @@ fn run() -> Result<(), String> {
                 app.message("Music playing", now);
             }
         }
-        if let Err(error) = ambient.sync(app.ambient_on, &app.config.sound_volumes) {
-            app.ambient_on = false;
-            let _ = ambient.sync(false, &app.config.sound_volumes);
-            app.message(error, now);
+        let (play_ambient, levels) = app.sound_mix();
+        if let Err(error) = ambient.sync(play_ambient, levels) {
+            let _ = ambient.sync(false, levels);
+            app.sound_error(error, now);
             dirty = true;
         }
         dirty |= assistant.tick(&mut app, now);
-        dirty |= app.tick_chatgpt();
         if let Some(error) = notifier.error() {
             app.message(error, now);
             dirty = true;
@@ -303,11 +302,15 @@ fn run() -> Result<(), String> {
                 .terminal
                 .draw(|f| ui::render(f, &app, wall, now))
                 .map_err(|e| e.to_string())?;
-            let step = if !app.config.animations {
+            let display_config = app.appearance_draft().unwrap_or(&app.config);
+            let step = if !display_config.animations {
                 1000
-            } else if app.image.as_ref().is_some_and(|image| image.animated()) {
+            } else if app
+                .display_image(display_config)
+                .is_some_and(|image| image.animated())
+            {
                 100
-            } else if app.config.weather == config::Weather::Clear {
+            } else if display_config.weather == config::Weather::Clear {
                 500
             } else {
                 250

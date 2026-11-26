@@ -4,26 +4,15 @@ import fcntl
 import os
 from pathlib import Path
 import pty
-import select
 import signal
 import struct
 import subprocess
 import tempfile
 import termios
-import time
+
+from pty_support import read_output, wait_for, wait_output
 
 BIN = Path(__file__).resolve().parents[1] / "target/debug/lofiji"
-
-def drain(master, seconds=0.15):
-    end = time.monotonic() + seconds
-    data = bytearray()
-    while time.monotonic() < end:
-        if select.select([master], [], [], max(0, end - time.monotonic()))[0]:
-            try:
-                data.extend(os.read(master, 65536))
-            except OSError:
-                break
-    return bytes(data)
 
 def size(fd, cols, rows):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -35,30 +24,29 @@ with tempfile.TemporaryDirectory(prefix="lofiji-pty-") as tmp:
         baseline = termios.tcgetattr(slave)
         proc = subprocess.Popen([str(BIN), "--config", tmp + "/config.toml"], stdin=slave, stdout=slave, stderr=slave)
         try:
-            output = drain(master, .3)
+            output = wait_output(master, b"38;2;")
             assert b"\x1b[?1049h" in output, "alternate screen not entered"
             assert b"\x1b[?1003h" not in output, "mouse capture must remain disabled"
             assert b"38;2;" in output, "true color missing"
             assert not termios.tcgetattr(slave)[3] & termios.ICANON, "raw mode missing"
             os.write(master,b"w")
-            drain(master,.2)
-            assert 'weather = "rain"' in Path(tmp,"config.toml").read_text()
+            path = Path(tmp, "config.toml")
+            wait_for(master, lambda: path.exists() and 'weather = "rain"' in path.read_text())
             for cols, rows in [(80,24), (40,12), (20,6), (1,1), (120,36)]:
                 size(slave, cols, rows)
                 os.kill(proc.pid, signal.SIGWINCH)
                 os.write(master, b"p ")
-                drain(master)
+                read_output(master, .5)
                 assert proc.poll() is None, "crashed while resizing"
             os.write(master, b"s")
-            drain(master)
+            wait_output(master, b"SETTINGS")
             # Toggle 24h -> 12h and save, then exit from the main screen.
             os.write(master, b"\r \x13")
-            drain(master)
-            assert 'format_24h = false' in Path(tmp, "config.toml").read_text()
+            wait_for(master, lambda: 'format_24h = false' in path.read_text())
             if exit_mode == "q": os.write(master, b"q")
             elif exit_mode == "ctrl-c": os.write(master, b"\x03")
             else: os.kill(proc.pid, signal.SIGTERM if exit_mode == "sigterm" else signal.SIGHUP)
-            output = drain(master, .5)
+            output = wait_output(master, b"\x1b[?1049l")
             assert proc.wait(timeout=2) == 0
             assert b"\x1b[?1049l" in output, "alternate screen not restored"
 
@@ -78,7 +66,7 @@ master, slave = pty.openpty()
 size(slave, 80, 24)
 proc = subprocess.Popen([str(BIN), "--config", "/tmp/lofiji-hangup-unused.toml"], stdin=slave, stdout=slave, stderr=slave)
 os.close(slave)
-drain(master, .3)
+wait_output(master, b"\x1b[?1049h")
 os.close(master)
 try:
     returncode = proc.wait(timeout=2)

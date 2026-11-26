@@ -1,7 +1,5 @@
 use crate::{
-    app::{
-        settings_section, AiPicker, App, Overlay, Settings, CHATGPT_CONNECT_ROW, SETTINGS_SECTIONS,
-    },
+    app::{AiPicker, App, Overlay, Section, SettingId, SettingKind, Settings, SoundSettings},
     background, clock,
     config::{hex_color, ClockStyle},
     layout::Composition,
@@ -211,10 +209,12 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
     if size.width == 0 || size.height == 0 {
         return;
     }
-    let time = clock::time(wall, &app.config);
-    let workspace = app.config.show_plan
-        || matches!(app.overlay, Overlay::Planner(_) | Overlay::Conversation(_));
-    let mut layout = if workspace {
+    let appearance = app.appearance_draft();
+    let config = appearance.unwrap_or(&app.config);
+    let time = clock::time(wall, config);
+    let workspace =
+        config.show_plan || matches!(app.overlay, Overlay::Planner(_) | Overlay::Conversation(_));
+    let mut layout = if workspace || appearance.is_some() {
         Composition::new(size, &time)
     } else {
         Composition::with_workspace(size, &time, false)
@@ -249,27 +249,27 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
         layout.header.unwrap_or_default(),
         workspace_area.unwrap_or_default(),
     ];
-    let frame = if app.config.animations {
+    let frame = if config.animations {
         now.saturating_duration_since(app.started).as_millis() as u64 / 250
     } else {
         0
     };
-    if let Some(image) = &app.image {
+    if let Some(image) = app.display_image(config) {
         image.draw_at(
             f.buffer_mut(),
-            app.config.image_brightness,
+            config.image_brightness,
             &protected,
-            if app.config.animations {
+            if config.animations {
                 now.saturating_duration_since(app.started).as_millis() as u64
             } else {
                 0
             },
         );
     }
-    if modal {
+    if modal && appearance.is_none() {
         match &app.overlay {
             Overlay::Help => help(f, app.help_scroll),
-            Overlay::Settings(settings_view) => settings(f, settings_view, app),
+            Overlay::Settings(settings_view) => settings(f, settings_view, app, None),
             Overlay::Sounds(s) => sounds(f, s),
             _ => unreachable!(),
         }
@@ -298,11 +298,11 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
             layout.clock,
             &time,
             scale,
-            app.config.blink_separator && wall.second() % 2 == 1,
-            &app.config,
+            config.blink_separator && wall.second() % 2 == 1,
+            config,
         );
     } else {
-        let suffix = if app.config.format_24h {
+        let suffix = if config.format_24h {
             ""
         } else {
             clock::meridiem(wall)
@@ -312,7 +312,7 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
                 .alignment(Alignment::Center)
                 .style(
                     Style::default()
-                        .fg(hex_color(&app.config.palette().hours).unwrap_or(BLUE))
+                        .fg(hex_color(&config.palette().hours).unwrap_or(BLUE))
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
             layout.clock,
@@ -327,7 +327,7 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
         } else {
             clock::date(wall, area.width < 44)
         };
-        let date = if layout.scale.is_some() && !app.config.format_24h {
+        let date = if layout.scale.is_some() && !config.format_24h {
             format!("{} · {date}", clock::meridiem(wall))
         } else {
             date
@@ -338,7 +338,7 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
             area.y,
             area.width,
             date,
-            hex_color(&app.config.palette().date).unwrap_or(TEXT),
+            hex_color(&config.palette().date).unwrap_or(TEXT),
         );
     }
     if let Some(area) = layout.timer.filter(|_| timer_active) {
@@ -394,11 +394,7 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
                 area.y,
                 area.width,
                 label,
-                if app.pomodoro_visible {
-                    phase_color(app.timer.phase)
-                } else {
-                    MUTED
-                },
+                phase_color(app.timer.phase),
             );
         }
         if let Some(bar) = layout.progress.filter(|_| app.pomodoro_visible) {
@@ -419,21 +415,41 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
         crate::dashboard::render(
             f,
             app,
+            config,
             area,
             wall.date_naive(),
             now.saturating_duration_since(app.started),
         );
     }
-    background::weather(f.buffer_mut(), &app.config, frame, &protected);
+    background::weather(f.buffer_mut(), config, frame, &protected);
     // The bottom two rows are reserved, regardless of content size.
-    let palette = app.config.palette();
+    let palette = config.palette();
     let footer_colors = [
         hex_color(&palette.hours).unwrap_or(BLUE),
         hex_color(&palette.separator).unwrap_or(MUTED),
     ];
     if size.height >= 3 {
-        if let Some((message, _)) = app.notice.as_ref().filter(|_| size.height >= 6) {
-            center(f, 0, size.height - 3, size.width, message, YELLOW);
+        let task_status = if matches!(app.overlay, Overlay::None) {
+            app.pending_task_completion
+                .and_then(|id| app.planner.data.entry(id))
+                .map(|task| format!("y complete · Esc keep open · {}", task.title))
+                .or_else(|| {
+                    app.focused_task_id
+                        .and_then(|id| app.planner.data.entry(id))
+                        .map(|task| format!("Focusing · {}", task.title))
+                })
+        } else {
+            None
+        };
+        if size.height >= 6 {
+            if let Some(message) = app
+                .notice
+                .as_ref()
+                .map(|(message, _)| message.as_str())
+                .or(task_status.as_deref())
+            {
+                center(f, 0, size.height - 3, size.width, message, YELLOW);
+            }
         }
         let action = match app.timer.status {
             Status::Ready => "start",
@@ -441,51 +457,48 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
             Status::Paused => "resume",
         };
         if !editing_workspace {
-            let controls = if app.pomodoro_visible {
+            let mut controls = if app.pomodoro_visible {
                 vec![
                     ("space", action),
                     ("p", "hide"),
-                    ("?", "help"),
-                    ("r", "reset"),
-                    ("n", "skip"),
-                    ("q", "quit"),
-                ]
-            } else if workspace_area.is_some_and(|area| area.height >= 3) {
-                vec![
-                    ("p", "pomo"),
                     ("s", "settings"),
                     ("?", "help"),
-                    ("v", "clock only"),
-                    (
-                        "a",
-                        if app.ambient_on {
-                            "sounds on"
-                        } else {
-                            "sounds"
-                        },
-                    ),
-                    ("b", "scene"),
+                ]
+            } else {
+                vec![("p", "pomo"), ("s", "settings"), ("?", "help")]
+            };
+            if app.ambient_on {
+                controls.insert(if app.pomodoro_visible { 2 } else { 1 }, ("a", "sounds on"));
+            }
+            if app.music_on || app.music_ready {
+                controls.insert(
+                    if app.pomodoro_visible { 2 } else { 1 },
                     (
                         "m",
                         if app.music_ready {
                             "music on"
-                        } else if app.music_on {
-                            "loading…"
                         } else {
-                            "music"
+                            "loading…"
                         },
                     ),
-                ]
+                );
+            }
+            if app.pomodoro_visible {
+                controls.extend([("r", "reset"), ("n", "skip"), ("q", "quit")]);
             } else {
-                vec![
-                    ("p", "pomo"),
-                    ("?", "help"),
-                    ("s", "settings"),
-                    ("v", if workspace { "clock only" } else { "workspace" }),
-                    ("c", "talk"),
-                    ("+", "task"),
-                ]
-            };
+                controls.push(("v", if workspace { "clock only" } else { "workspace" }));
+                if workspace_area.is_some_and(|area| area.height >= 3) {
+                    if !app.ambient_on {
+                        controls.push(("a", "sounds"));
+                    }
+                    controls.push(("b", "scene"));
+                    if !app.music_on && !app.music_ready {
+                        controls.push(("m", "music"));
+                    }
+                } else {
+                    controls.extend([("c", "talk"), ("+", "task")]);
+                }
+            }
             let mut used = 0;
             let fitting: Vec<_> = controls
                 .into_iter()
@@ -503,6 +516,20 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
     }
 
     match &app.overlay {
+        Overlay::Settings(s) if appearance.is_some() => {
+            let top = layout.date.unwrap_or(layout.clock).bottom();
+            let height = size.bottom().saturating_sub(top).min(14);
+            let preview_panel = (height >= 8).then(|| {
+                let width = size.width.min(62);
+                let x = if size.width >= 75 {
+                    size.right() - width
+                } else {
+                    (size.width - width) / 2
+                };
+                Rect::new(x, size.bottom() - height, width, height)
+            });
+            settings(f, s, app, preview_panel);
+        }
         Overlay::None => {}
         Overlay::Planner(view) if workspace_area.map_or(true, |area| area.height < 6) => {
             crate::planning_ui::goals(f, app, view, wall.date_naive())
@@ -511,8 +538,8 @@ pub fn render(f: &mut Frame, app: &App, wall: DateTime<Local>, now: Instant) {
             crate::planning_ui::conversation(
                 f,
                 view,
-                app.config.palette(),
-                &app.config.ai,
+                config.palette(),
+                &config.ai,
                 now.saturating_duration_since(app.started),
             )
         }
@@ -611,9 +638,9 @@ fn help(f: &mut Frame, scroll: usize) {
         Alignment::Left,
     );
 }
-fn settings(f: &mut Frame, s: &Settings, app: &App) {
+fn settings(f: &mut Frame, s: &Settings, app: &App, preview: Option<Rect>) {
     let menu = s.in_menu();
-    let section = settings_section(s.selected);
+    let section = s.selected.section();
     let height = if menu {
         11
     } else if app.ai_picker.is_none() && s.input.is_none() {
@@ -621,16 +648,8 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
     } else {
         25
     };
-    let area = overlay_area(f, 72, height);
-    panel(
-        f,
-        area,
-        if menu {
-            "SETTINGS"
-        } else {
-            SETTINGS_SECTIONS[section].0
-        },
-    );
+    let area = preview.unwrap_or_else(|| overlay_area(f, 72, height));
+    panel(f, area, if menu { "SETTINGS" } else { section.label() });
     if area.width < 26 || area.height < 8 {
         text(
             f,
@@ -654,15 +673,10 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
     }
     if menu {
         let visible = usize::from(area.height - 5);
-        let first = (section + 1).saturating_sub(visible);
-        for (line, (index, (label, _))) in SETTINGS_SECTIONS
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(visible)
-            .enumerate()
-        {
-            let selected = index == section;
+        let first = (section as usize + 1).saturating_sub(visible);
+        for (line, item) in Section::ALL.iter().skip(first).take(visible).enumerate() {
+            let selected = *item == section;
+            let label = item.label();
             text(
                 f,
                 area.x + 2,
@@ -689,7 +703,11 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
             area.x + 2,
             area.bottom() - 2,
             area.width - 4,
-            "Esc back · ↑↓ choose · Enter open · Ctrl+S save",
+            if s.confirm_discard {
+                "Esc discard · Ctrl+S save"
+            } else {
+                "Esc back · ↑↓ choose · Enter open · Ctrl+S save"
+            },
             BLUE,
             Alignment::Left,
         );
@@ -749,12 +767,8 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
         return;
     }
     if let Some(input) = &s.input {
-        let label = match s.selected {
-            crate::app::MUSIC_ROW => "YouTube link",
-            crate::app::IMAGE_ROW => "PNG / GIF file path",
-            crate::app::AI_MODEL_ROW => "Model ID from your provider / Ollama",
-            crate::app::AI_URL_ROW => "API base URL · blank uses the provider default",
-            crate::app::AI_KEY_ROW => "API key variable name · never paste the key",
+        let label = match s.selected.descriptor().1 {
+            SettingKind::Text(label) => label,
             _ => "Clock color · #RRGGBB · edits selected palette",
         };
         text(
@@ -766,27 +780,12 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
             TEXT,
             Alignment::Left,
         );
-        let width = usize::from(area.width - 5);
-        let mut start = input.cursor;
-        let mut columns = 0;
-        for (index, ch) in input.value[..input.cursor].char_indices().rev() {
-            let advance = Line::from(ch.to_string()).width();
-            if columns + advance >= width {
-                break;
-            }
-            columns += advance;
-            start = index;
-        }
-        text(
+        crate::planning_ui::input_line(
             f,
-            area.x + 2,
-            area.y + 4,
-            area.width - 4,
-            &input.value[start..],
+            Rect::new(area.x + 2, area.y + 4, area.width - 4, 1),
+            input,
             CYAN,
-            Alignment::Left,
         );
-        f.set_cursor(area.x + 2 + columns as u16, area.y + 4);
         text(
             f,
             area.x + 2,
@@ -808,133 +807,132 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
             "Off".to_string()
         }
     };
-    let rows = [
-        (
-            "Time format",
-            if c.format_24h {
-                "24-hour".into()
-            } else {
-                "12-hour".into()
-            },
-        ),
-        ("Seconds", on(c.show_seconds)),
-        ("Blink separators", on(c.blink_separator)),
-        ("Scene motion", on(c.animations)),
-        ("Focus", format!("{} min", c.focus_minutes)),
-        ("Short break", format!("{} min", c.short_break_minutes)),
-        ("Long break", format!("{} min", c.long_break_minutes)),
-        ("Auto transitions", on(c.auto_advance)),
-        ("Notifications", c.notifications.label().to_string()),
-        ("Weather", c.weather.label().into()),
-        ("Background", c.background.label().into()),
-        (
-            "Image path (Enter)",
-            if c.image_path.is_empty() {
-                "Bundled wallpaper".into()
-            } else {
-                std::path::Path::new(&c.image_path)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| c.image_path.clone())
-            },
-        ),
-        ("Image brightness", format!("{}%", c.image_brightness)),
-        (
-            "YouTube (Enter edit)",
-            if c.music_url.is_empty() {
-                "Not set".into()
-            } else {
-                c.music_url
-                    .split("v=")
-                    .nth(1)
-                    .and_then(|s| s.split('&').next())
-                    .unwrap_or_else(|| c.music_url.rsplit('/').next().unwrap_or(&c.music_url))
-                    .to_string()
-            },
-        ),
-        ("Music volume", format!("{}%", c.music_volume)),
-        (
-            "Clock palette",
-            if c.clock_palette == 0 {
-                format!("Scene · {}", c.palette().name)
-            } else {
-                c.palette().name.clone()
-            },
-        ),
-        ("Hours color (Enter)", c.palette().hours.clone()),
-        ("Seconds color (Enter)", c.palette().seconds.clone()),
-        ("Separator (Enter)", c.palette().separator.clone()),
-        ("Date color (Enter)", c.palette().date.clone()),
-        ("Clock style", c.clock_style.label().into()),
-        ("Text workspace", on(c.show_plan)),
-        ("Provider (Enter)", c.ai.provider.label().into()),
-        (
-            "Model (Enter)",
-            if c.ai.provider == crate::ai::Provider::Chatgpt {
-                let name = app
-                    .chatgpt_models
-                    .iter()
-                    .find(|model| model.slug == c.ai.model)
-                    .map(|model| model.name.as_str());
-                if c.ai.model.is_empty() {
-                    app.chatgpt_models.first().map_or_else(
-                        || "Automatic".into(),
-                        |model| format!("Auto · {}", model.name),
-                    )
+    let row = |id: SettingId| {
+        let (label, _) = id.descriptor();
+        let label = if id == SettingId::Connect && app.chatgpt_connected {
+            "Reconnect ChatGPT"
+        } else {
+            label
+        };
+        let value = match id {
+            SettingId::TimeFormat => {
+                if c.format_24h {
+                    "24-hour".into()
                 } else {
-                    name.unwrap_or(&c.ai.model).into()
+                    "12-hour".into()
                 }
-            } else if c.ai.model.is_empty() {
-                "Choose a model".into()
-            } else {
-                c.ai.model.clone()
-            },
-        ),
-        (
-            "API base (Enter)",
-            if c.ai.endpoint().is_empty() {
-                "Set API base URL".into()
-            } else if c.ai.base_url.is_empty() {
-                "Provider default".into()
-            } else {
-                c.ai.base_url.clone()
-            },
-        ),
-        (
-            "API key variable (Enter)",
-            if c.ai.key_name().is_empty() {
-                "Not required".into()
-            } else {
-                c.ai.key_name().into()
-            },
-        ),
-        ("AI plan on open", on(c.ai.auto_brief)),
-        ("AI timeout", format!("{} sec", c.ai.timeout_seconds)),
-        (
-            if app.chatgpt_connected {
-                "Reconnect ChatGPT"
-            } else {
-                "Continue with ChatGPT"
-            },
-            if app.chatgpt_busy() {
-                "Working…".into()
-            } else {
-                "Enter".into()
-            },
-        ),
-        ("Add another ChatGPT account", "Enter".into()),
-        ("Switch ChatGPT account", "Enter · next saved".into()),
-        ("Sign out of ChatGPT", "Enter".into()),
-        ("Thinking effort", c.ai.thinking_effort.label().into()),
-    ];
+            }
+            SettingId::Seconds => on(c.show_seconds),
+            SettingId::Blink => on(c.blink_separator),
+            SettingId::Motion => on(c.animations),
+            SettingId::Focus => format!("{} min", c.focus_minutes),
+            SettingId::ShortBreak => format!("{} min", c.short_break_minutes),
+            SettingId::LongBreak => format!("{} min", c.long_break_minutes),
+            SettingId::AutoAdvance => on(c.auto_advance),
+            SettingId::Notifications => c.notifications.label().to_string(),
+            SettingId::Weather => c.weather.label().into(),
+            SettingId::Background => c.background.label().into(),
+            SettingId::ImagePath => {
+                if c.image_path.is_empty() {
+                    "Bundled wallpaper".into()
+                } else {
+                    std::path::Path::new(&c.image_path)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| c.image_path.clone())
+                }
+            }
+            SettingId::Brightness => format!("{}%", c.image_brightness),
+            SettingId::MusicUrl => {
+                if c.music_url.is_empty() {
+                    "Not set".into()
+                } else {
+                    c.music_url
+                        .split("v=")
+                        .nth(1)
+                        .and_then(|s| s.split('&').next())
+                        .unwrap_or_else(|| c.music_url.rsplit('/').next().unwrap_or(&c.music_url))
+                        .to_string()
+                }
+            }
+            SettingId::MusicVolume => format!("{}%", c.music_volume),
+            SettingId::Palette => {
+                if c.clock_palette == 0 {
+                    format!("Scene · {}", c.palette().name)
+                } else {
+                    c.palette().name.clone()
+                }
+            }
+            SettingId::HoursColor => c.palette().hours.clone(),
+            SettingId::SecondsColor => c.palette().seconds.clone(),
+            SettingId::SeparatorColor => c.palette().separator.clone(),
+            SettingId::DateColor => c.palette().date.clone(),
+            SettingId::ClockStyle => c.clock_style.label().into(),
+            SettingId::Workspace => on(c.show_plan),
+            SettingId::Provider => c.ai.provider.label().into(),
+            SettingId::Model => {
+                if c.ai.provider == crate::ai::Provider::Chatgpt {
+                    let name = app
+                        .chatgpt_models
+                        .iter()
+                        .find(|model| model.slug == c.ai.model)
+                        .map(|model| model.name.as_str());
+                    if c.ai.model.is_empty() {
+                        app.chatgpt_models.first().map_or_else(
+                            || "Automatic".into(),
+                            |model| format!("Auto · {}", model.name),
+                        )
+                    } else {
+                        name.unwrap_or(&c.ai.model).into()
+                    }
+                } else if c.ai.model.is_empty() {
+                    "Choose a model".into()
+                } else {
+                    c.ai.model.clone()
+                }
+            }
+            SettingId::ApiUrl => {
+                if c.ai.endpoint().is_empty() {
+                    "Set API base URL".into()
+                } else if c.ai.base_url.is_empty() {
+                    "Provider default".into()
+                } else {
+                    c.ai.base_url.clone()
+                }
+            }
+            SettingId::ApiKey => {
+                if c.ai.key_name().is_empty() {
+                    "Not required".into()
+                } else {
+                    c.ai.key_name().into()
+                }
+            }
+            SettingId::AutoBrief => on(c.ai.auto_brief),
+            SettingId::Timeout => format!("{} sec", c.ai.timeout_seconds),
+            SettingId::Connect => {
+                if app.chatgpt_busy() {
+                    "Working…".into()
+                } else {
+                    "Enter".into()
+                }
+            }
+            SettingId::AddAccount => "Enter".into(),
+            SettingId::SwitchAccount => "Enter · next saved".into(),
+            SettingId::Disconnect => "Enter".into(),
+            SettingId::Effort => c.ai.thinking_effort.label().into(),
+            SettingId::DashboardOpacity => format!("{}%", c.dashboard_opacity),
+            SettingId::Menu(_) => String::new(),
+        };
+        (label, value)
+    };
     if area.width < 40 {
-        let (label, value) = &rows[s.selected];
+        let (label, value) = row(s.selected);
         text(
             f,
             area.x + 2,
             area.y + 2,
             area.width - 4,
-            *label,
+            label,
             TEXT,
             Alignment::Left,
         );
@@ -943,7 +941,7 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
             area.x + 2,
             area.y + 4,
             area.width - 4,
-            s.error.as_deref().unwrap_or(value),
+            s.error.as_deref().unwrap_or(&value),
             if s.error.is_some() { PINK } else { CYAN },
             Alignment::Left,
         );
@@ -973,7 +971,7 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
     let first = (selected_index + 1).saturating_sub(visible);
     let value_width = (area.width / 2).clamp(12, 34);
     for (index, &i) in page.iter().enumerate().skip(first).take(visible) {
-        let (label, value) = &rows[i];
+        let (label, value) = row(i);
         let selected = i == s.selected;
         let y = area.y + 2 + (index - first) as u16;
         if selected {
@@ -996,9 +994,9 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
             area.right() - value_width - 2,
             y,
             value_width,
-            value,
-            if (16..=19).contains(&i) {
-                hex_color(value).unwrap_or(CYAN)
+            value.as_str(),
+            if matches!(i.descriptor().1, SettingKind::Color) {
+                hex_color(&value).unwrap_or(CYAN)
             } else if selected {
                 CYAN
             } else {
@@ -1009,16 +1007,16 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
     }
     let foot = area.y + area.height - 5;
     let account_hint = if app.chatgpt_busy() {
-        Some(if s.selected == 31 {
+        Some(if s.selected == SettingId::Disconnect {
             "Signing out of ChatGPT…"
-        } else if s.selected == crate::app::AI_MODEL_ROW {
+        } else if s.selected == SettingId::Model {
             "Loading models for your ChatGPT account…"
-        } else if s.selected == 30 {
+        } else if s.selected == SettingId::SwitchAccount {
             "Switching ChatGPT account…"
         } else {
             "Complete sign-in in your browser · Esc cancels"
         })
-    } else if (CHATGPT_CONNECT_ROW..=31).contains(&s.selected) {
+    } else if matches!(s.selected.descriptor().1, SettingKind::Account(_)) {
         Some("ChatGPT plan limits · Ctrl-S saves provider selection")
     } else {
         None
@@ -1032,17 +1030,17 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
             error.as_str()
         } else if let Some(hint) = account_hint {
             hint
-        } else if s.selected >= 22 {
-            if s.selected == crate::app::AI_EFFORT_ROW {
+        } else if section == Section::Ai {
+            if s.selected == SettingId::Effort {
                 "←→ change effort · availability varies by model"
-            } else if s.selected == crate::app::AI_MODEL_ROW {
+            } else if s.selected == SettingId::Model {
                 "Enter to choose a model"
-            } else if s.selected == crate::app::AI_PROVIDER_ROW {
+            } else if s.selected == SettingId::Provider {
                 "Enter to choose a provider"
             } else {
                 "AI uses active reminders, goals and tasks"
             }
-        } else if matches!(s.selected, 4..=6 | 12 | 14 | 27) {
+        } else if matches!(s.selected.descriptor().1, SettingKind::Number) {
             "←→ adjust value"
         } else {
             "←→ change values · Enter opens or edits"
@@ -1050,7 +1048,7 @@ fn settings(f: &mut Frame, s: &Settings, app: &App) {
         if s.error.is_some() { PINK } else { TEXT },
         Alignment::Left,
     );
-    if section == 3
+    if section == Section::Ai
         && matches!(
             c.ai.provider,
             crate::ai::Provider::Chatgpt | crate::ai::Provider::Off
@@ -1084,7 +1082,7 @@ fn dim(color: Color) -> Color {
         _ => DIM,
     }
 }
-fn sounds(f: &mut Frame, s: &Settings) {
+fn sounds(f: &mut Frame, s: &SoundSettings) {
     let area = overlay_area(f, 56, 19);
     panel(f, area, "LAYERED SOUNDS");
     if area.height < 7 || area.width < 24 {
@@ -1100,7 +1098,7 @@ fn sounds(f: &mut Frame, s: &Settings) {
     {
         let y = area.y + 2 + (i - first) as u16;
         let name = crate::ambient::NAMES[*layer];
-        let volume = s.draft.sound_volumes[*layer];
+        let volume = s.volumes[*layer];
         text(
             f,
             area.x + 2,
@@ -1150,7 +1148,11 @@ fn sounds(f: &mut Frame, s: &Settings) {
         area.x + 2,
         foot + 2,
         area.width - 4,
-        "Offline loops · z mutes/resumes the saved mix",
+        if s.audition {
+            "v audition on · 1 Hearth  2 Café  3 Forest"
+        } else {
+            "v audition off · 1 Hearth  2 Café  3 Forest"
+        },
         MUTED,
         Alignment::Left,
     );
@@ -1214,6 +1216,31 @@ mod tests {
                 Composition::with_workspace(Rect::new(0, 0, w, h), "22:48:07", false).clock;
             assert!((i32::from(centered.y * 2 + centered.height) - i32::from(h)).abs() <= 1);
         }
+    }
+    #[test]
+    fn appearance_draft_previews_the_clock_and_workspace_together() {
+        let mut app = App::new(Config::default(), PathBuf::new());
+        let mut settings = Settings::new(app.config.clone());
+        settings.selected = SettingId::DashboardOpacity;
+        settings.draft.dashboard_opacity = 100;
+        let index = settings.draft.palette_index();
+        settings.draft.clock_palettes[index].hours = "#ff9842".into();
+        app.overlay = Overlay::Settings(settings);
+        let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+        let wall = Local::now();
+        terminal
+            .draw(|f| render(f, &app, wall, app.started))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let layout = Composition::new(buffer.area, &clock::time(wall, &app.config));
+        assert!((layout.clock.x..layout.clock.right()).any(|x| {
+            (layout.clock.y..layout.clock.bottom())
+                .any(|y| buffer.get(x, y).fg == Color::Rgb(255, 152, 66))
+        }));
+        let workspace =
+            crate::planning_ui::workspace_area(buffer.area, &layout, false, false).unwrap();
+        assert_eq!(buffer.get(workspace.x, workspace.y).bg, BG);
+        assert_eq!(app.config.dashboard_opacity, 75);
     }
     #[test]
     fn compact_workspace_keeps_time_and_controls() {
@@ -1476,13 +1503,14 @@ mod tests {
                     if mode == 3 {
                         app.overlay = Overlay::Settings(Settings {
                             draft: Config::default(),
-                            selected: 8,
+                            selected: SettingId::Notifications,
+                            confirm_discard: false,
                             error: None,
                             input: None,
                         });
                     }
                     if mode == 4 {
-                        app.overlay = Overlay::Sounds(Settings::new(app.config.clone()));
+                        app.overlay = Overlay::Sounds(SoundSettings::new(&app.config, false));
                     }
                     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
                     terminal
@@ -1660,5 +1688,65 @@ mod tests {
             let later = crate::preview::snapshot(120, 36, "clock", wall, config, 60.0).unwrap();
             assert_eq!(first, later);
         }
+    }
+    #[test]
+    fn dashboard_opacity_controls_scene_blending_and_appears_in_appearance() {
+        use crate::config::Background;
+        use chrono::TimeZone;
+        let wall = Local.with_ymd_and_hms(2026, 11, 17, 22, 48, 7).unwrap();
+        let layout = Composition::new(Rect::new(0, 0, 120, 36), "22:48:07");
+        let panel =
+            crate::planning_ui::workspace_area(Rect::new(0, 0, 120, 36), &layout, false, false)
+                .unwrap();
+        let render_with_opacity = |opacity| {
+            crate::preview::snapshot(
+                120,
+                36,
+                "plan",
+                wall,
+                Config {
+                    background: Background::Bonfire,
+                    image_brightness: 100,
+                    dashboard_opacity: opacity,
+                    ..Config::default()
+                },
+                0.0,
+            )
+            .unwrap()
+        };
+        let transparent = render_with_opacity(0);
+        let default_buf = render_with_opacity(75);
+        let opaque = render_with_opacity(100);
+        let mut any_scene_diff = false;
+        for y in panel.y..panel.bottom() {
+            for x in panel.x..panel.right() {
+                let opaque_cell = opaque.get(x, y);
+                assert_eq!(opaque_cell.bg, BG);
+                if transparent.get(x, y).bg != BG {
+                    any_scene_diff = true;
+                    assert_ne!(transparent.get(x, y).bg, default_buf.get(x, y).bg);
+                    assert_ne!(default_buf.get(x, y).bg, BG);
+                }
+            }
+        }
+        assert!(any_scene_diff);
+
+        let mut app = App::new(Config::default(), PathBuf::new());
+        app.overlay = Overlay::Settings(Settings {
+            draft: Config::default(),
+            selected: SettingId::DashboardOpacity,
+            confirm_discard: false,
+            error: None,
+            input: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| render(f, &app, wall, app.started))
+            .unwrap();
+        let screen = crate::preview::plain(terminal.backend().buffer());
+        assert!(screen.contains("Appearance"));
+        assert!(screen.contains("Dashboard opacity"));
+        assert!(screen.contains("75%"));
+        assert!(screen.contains("←→ adjust value"));
     }
 }

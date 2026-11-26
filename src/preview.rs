@@ -1,6 +1,6 @@
 //! Deterministic exports use the same Ratatui renderer as the live terminal.
 use crate::{
-    app::{App, Overlay, Settings},
+    app::{App, Overlay, SettingId, Settings, SoundSettings},
     config::Config,
     ui,
 };
@@ -123,10 +123,10 @@ pub fn snapshot(
             app.timer.skip(&app.config, app.started);
             app.timer.toggle(app.started);
         }
-        "ai_settings" => {app.overlay=Overlay::Settings(Settings {draft:app.config.clone(),selected:crate::app::AI_PROVIDER_ROW,error:None,input:None});}
-        "settings" => app.overlay = Overlay::Settings(Settings::menu(app.config.clone())),
+        "ai_settings" => {app.overlay=Overlay::Settings(Settings {draft:app.config.clone(),selected:SettingId::Provider,error:None,input:None,confirm_discard:false});}
+        "settings" => app.overlay = Overlay::Settings(Settings::new(app.config.clone())),
         "help" => app.overlay = Overlay::Help,
-        "sounds" => app.overlay = Overlay::Sounds(Settings::new(app.config.clone())),
+        "sounds" => app.overlay = Overlay::Sounds(SoundSettings::new(&app.config, false)),
         _ => {
             return Err(
                 "Mode must be clock, focus, paused, break, settings, sounds, plan, goals, character, conversation, ai_settings, or help".into(),

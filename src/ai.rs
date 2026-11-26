@@ -769,6 +769,7 @@ struct Job {
 }
 pub struct Client {
     job: Option<Job>,
+    retiring: Vec<JoinHandle<()>>,
     send: Sender<(u64, Result<String, String>)>,
     receive: Receiver<(u64, Result<String, String>)>,
     sequence: u64,
@@ -779,6 +780,7 @@ impl Client {
         let (send, receive) = mpsc::channel();
         Self {
             job: None,
+            retiring: Vec::new(),
             send,
             receive,
             sequence: 0,
@@ -801,12 +803,13 @@ impl Client {
         let flag = Arc::new(AtomicBool::new(false));
         let worker = flag.clone();
         let send = self.send.clone();
+        let thread = thread::spawn(move || {
+            let result = work(&worker);
+            let _ = send.send((id, result));
+        });
         self.job = Some(Job {
             cancel: flag,
-            thread: thread::spawn(move || {
-                let result = work(&worker);
-                let _ = send.send((id, result));
-            }),
+            thread,
         });
         self.active = Some(id);
         id
@@ -814,11 +817,12 @@ impl Client {
     pub fn cancel(&mut self) {
         if let Some(job) = self.job.take() {
             job.cancel.store(true, Ordering::Relaxed);
-            let _ = job.thread.join();
+            self.retiring.push(job.thread);
         }
         self.active = None;
     }
     pub fn poll(&mut self) -> Option<(u64, Result<String, String>)> {
+        self.retiring.retain(|job| !job.is_finished());
         while let Ok((id, result)) = self.receive.try_recv() {
             if self.active == Some(id) {
                 self.cancel();
@@ -831,6 +835,10 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         self.cancel();
+        // Drop runs on shutdown. Reap transports before the application exits.
+        for job in self.retiring.drain(..) {
+            let _ = job.join();
+        }
     }
 }
 

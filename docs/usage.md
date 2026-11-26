@@ -141,15 +141,15 @@ Optional **mpv** is required; no YouTube extractor or internet connection is nee
 
 ![Layered sounds](sounds.png)
 
-Press `a`: ↑/↓ selects a layer, ←/→ adjusts volume, Space switches it on/off. **Enter plays and saves the mix**, `x` clears the draft, Esc cancels. `z` mutes/resumes the saved mix from the clock screen. Each layer has an independent volume and can play alongside YouTube music.
+Press `a`: ↑/↓ selects a layer, ←/→ adjusts volume, Space switches it on/off. **Enter plays and saves the mix**. Press `v` in the mixer to audition the draft, `x` to clear it, or `1`/ `2`/ `3` to load Hearth, Café, or Forest into the draft. Esc restores the previous mix and playback state. `z` mutes/resumes the saved mix from the clock screen. Each layer has an independent volume and can play alongside YouTube music.
 
 Included: campfire, a separate indoor fireplace, light rain, street café, thunderstorm, wind, summer night, forest birds, white noise, pink noise and brown noise. The fireplace sits next to Campfire in the menu and has its own volume. It uses a bundled [CC0 wood-burning fireplace loop](https://opengameart.org/content/fireplace-sound-loop), included as an offline ambience. Environmental recordings have crossfaded loop seams; colored noise is synthesized. [Sources and licenses](../assets/sounds/LICENSE.md).
 
-Saved volumes are remembered; sounds stay off on each launch. Changing one layer preserves other running layers. Owned players and temporary sound files are cleaned up on normal exit and handled termination signals.
+Saved volumes are remembered; sounds stay off on each launch. Adjusting a playing layer updates its volume without restarting the loop. Owned players and temporary sound files are cleaned up on normal exit and handled termination signals.
 
 ## Settings
 
-Open **Appearance**, **Pomodoro**, **Audio**, or **AI** with Enter. Use ↑/↓ or j/k to select, and ←/→ to change values. Enter opens text fields or changes a toggle. In a text field, Enter accepts the field and Esc cancels its edits. Esc goes back to the section menu, then closes Settings. **Ctrl+S** saves the draft and closes Settings.
+Open **Appearance**, **Pomodoro**, **Audio**, or **AI** with Enter. Use ↑/↓ or j/k to select, and ←/→ to change values. Enter opens text fields or changes a toggle. In a text field, Enter accepts the field and Esc cancels its edits. Home and End move to the first and last rows of the current section. Appearance previews changes as you edit. Esc goes back to the section menu, where unsaved edits require a second Esc to discard. **Ctrl+S** saves the draft and closes Settings.
 
 Settings live at `$XDG_CONFIG_HOME/lofiji/config.toml`, falling back to `~/.config/lofiji/config.toml`. `--config PATH` selects another file. Preferences from the former Nekoji directory import if the Lofiji file is absent. Old scene names migrate to image scenes. Invalid files are reported without overwriting them. [Example](../config.example.toml).
 
@@ -173,6 +173,8 @@ The footer shows **loading…** until audio initializes. Stream failures show sa
 ## Pomodoro
 
 Defaults: 25-minute focus, 5-minute short break, 15-minute long break after four completed focus sessions. Durations are editable (1–180 minutes). Skipping a focus does not count as completion. Hiding Pomodoro keeps it running; the clock remains prominent.
+
+Press **g** and select a pending task, then press **F** to start a focus session for it when the focus timer is ready. After the session, **y** marks the task complete and **Esc** keeps it open. Resetting or skipping the session clears the task link.
 
 Auto transitions and notifications start off. Settings offer a terminal bell or optional `notify-send` desktop notifications. Running/paused sessions retain their duration after settings edits. Monotonic deadlines prevent render/resize drift and catch up after process suspension. Sessions are not persisted across restarts; Linux monotonic time excludes system sleep.
 

@@ -1,55 +1,136 @@
 use crate::{
     background::Image,
     config::{hex_color, validate_music_url, Background, Config, SOUND_COUNT},
-    timer::{Pomodoro, Status},
+    timer::{Phase, Pomodoro, Status},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     time::{Duration, Instant},
 };
 
-pub const AI_PROVIDER_ROW: usize = 22;
-pub const IMAGE_ROW: usize = 11;
-pub const MUSIC_ROW: usize = 13;
-pub const AI_MODEL_ROW: usize = 23;
-pub const AI_URL_ROW: usize = 24;
-pub const AI_KEY_ROW: usize = 25;
-pub const CHATGPT_CONNECT_ROW: usize = 28;
-pub const AI_EFFORT_ROW: usize = 32;
-const CHATGPT_ACTIONS: [&str; 4] = ["connect", "add", "switch", "disconnect"];
-
-pub fn ai_rows(settings: &crate::ai::Settings) -> &'static [usize] {
-    match settings.provider {
-        crate::ai::Provider::Off => &[22, 28],
-        crate::ai::Provider::Chatgpt => &[22, 28, 23, AI_EFFORT_ROW, 26, 27, 29, 30, 31],
-        _ if settings.supports_effort() => &[22, 23, AI_EFFORT_ROW, 24, 25, 26, 27],
-        _ => &[22, 23, 24, 25, 26, 27],
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Appearance,
+    Pomodoro,
+    Audio,
+    Ai,
+}
+impl Section {
+    pub const ALL: [Self; 4] = [Self::Appearance, Self::Pomodoro, Self::Audio, Self::Ai];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Pomodoro => "Pomodoro",
+            Self::Audio => "Audio",
+            Self::Ai => "AI",
+        }
     }
 }
+#[derive(Clone, Copy)]
+pub enum SettingKind {
+    Choice,
+    Number,
+    Text(&'static str),
+    Color,
+    Picker,
+    Account(&'static str),
+}
 
-const SETTINGS_MENU: usize = 33;
-pub const SETTINGS_SECTIONS: [(&str, &[usize]); 4] = [
-    (
-        "Appearance",
-        &[0, 1, 2, 3, 10, 11, 12, 15, 16, 17, 18, 19, 20, 21, 9],
-    ),
-    ("Pomodoro", &[4, 5, 6, 7, 8]),
-    ("Audio", &[13, 14]),
-    ("AI", &[AI_PROVIDER_ROW]),
-];
+macro_rules! settings {
+    ($($id:ident => ($section:ident, $label:literal, $kind:expr)),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum SettingId { $($id,)+ Menu(Section) }
+        impl SettingId {
+            pub fn section(self) -> Section {
+                match self { $(Self::$id => Section::$section,)+ Self::Menu(section) => section }
+            }
+            pub fn descriptor(self) -> (&'static str, SettingKind) {
+                match self { $(Self::$id => ($label, $kind),)+ Self::Menu(section) => (section.label(), SettingKind::Picker) }
+            }
+        }
+    };
+}
 
-pub fn settings_section(row: usize) -> usize {
-    if row >= SETTINGS_MENU {
-        row - SETTINGS_MENU
-    } else if row >= AI_PROVIDER_ROW {
-        3
-    } else {
-        SETTINGS_SECTIONS
-            .iter()
-            .position(|(_, rows)| rows.contains(&row))
-            .unwrap_or(0)
+settings! {
+    TimeFormat => (Appearance, "Time format", SettingKind::Choice),
+    Seconds => (Appearance, "Seconds", SettingKind::Choice),
+    Blink => (Appearance, "Blink separators", SettingKind::Choice),
+    Motion => (Appearance, "Scene motion", SettingKind::Choice),
+    Background => (Appearance, "Background", SettingKind::Choice),
+    ImagePath => (Appearance, "Image path", SettingKind::Text("PNG / GIF file path")),
+    Brightness => (Appearance, "Image brightness", SettingKind::Number),
+    Palette => (Appearance, "Clock palette", SettingKind::Choice),
+    HoursColor => (Appearance, "Hours color", SettingKind::Color),
+    SecondsColor => (Appearance, "Seconds color", SettingKind::Color),
+    SeparatorColor => (Appearance, "Separator color", SettingKind::Color),
+    DateColor => (Appearance, "Date color", SettingKind::Color),
+    ClockStyle => (Appearance, "Clock style", SettingKind::Choice),
+    Workspace => (Appearance, "Text workspace", SettingKind::Choice),
+    DashboardOpacity => (Appearance, "Dashboard opacity", SettingKind::Number),
+    Weather => (Appearance, "Weather", SettingKind::Choice),
+    Focus => (Pomodoro, "Focus", SettingKind::Number),
+    ShortBreak => (Pomodoro, "Short break", SettingKind::Number),
+    LongBreak => (Pomodoro, "Long break", SettingKind::Number),
+    AutoAdvance => (Pomodoro, "Auto transitions", SettingKind::Choice),
+    Notifications => (Pomodoro, "Notifications", SettingKind::Choice),
+    MusicUrl => (Audio, "YouTube link", SettingKind::Text("YouTube link")),
+    MusicVolume => (Audio, "Music volume", SettingKind::Number),
+    Provider => (Ai, "Provider", SettingKind::Picker),
+    Model => (Ai, "Model", SettingKind::Text("Model ID from your provider / Ollama")),
+    ApiUrl => (Ai, "API base", SettingKind::Text("API base URL · blank uses the provider default")),
+    ApiKey => (Ai, "API key variable", SettingKind::Text("API key variable name · never paste the key")),
+    AutoBrief => (Ai, "AI plan on open", SettingKind::Choice),
+    Timeout => (Ai, "AI timeout", SettingKind::Number),
+    Connect => (Ai, "Continue with ChatGPT", SettingKind::Account("connect")),
+    AddAccount => (Ai, "Add another ChatGPT account", SettingKind::Account("add")),
+    SwitchAccount => (Ai, "Switch ChatGPT account", SettingKind::Account("switch")),
+    Disconnect => (Ai, "Sign out of ChatGPT", SettingKind::Account("disconnect")),
+    Effort => (Ai, "Thinking effort", SettingKind::Choice),
+}
+
+fn setting_rows(section: Section, settings: &crate::ai::Settings) -> &'static [SettingId] {
+    use SettingId::*;
+    match section {
+        Section::Appearance => &[
+            TimeFormat,
+            Seconds,
+            Blink,
+            Motion,
+            Background,
+            ImagePath,
+            Brightness,
+            Palette,
+            HoursColor,
+            SecondsColor,
+            SeparatorColor,
+            DateColor,
+            ClockStyle,
+            Workspace,
+            DashboardOpacity,
+            Weather,
+        ],
+        Section::Pomodoro => &[Focus, ShortBreak, LongBreak, AutoAdvance, Notifications],
+        Section::Audio => &[MusicUrl, MusicVolume],
+        Section::Ai => match settings.provider {
+            crate::ai::Provider::Off => &[Provider, Connect],
+            crate::ai::Provider::Chatgpt => &[
+                Provider,
+                Connect,
+                Model,
+                Effort,
+                AutoBrief,
+                Timeout,
+                AddAccount,
+                SwitchAccount,
+                Disconnect,
+            ],
+            _ if settings.supports_effort() => {
+                &[Provider, Model, Effort, ApiUrl, ApiKey, AutoBrief, Timeout]
+            }
+            _ => &[Provider, Model, ApiUrl, ApiKey, AutoBrief, Timeout],
+        },
     }
 }
 
@@ -67,35 +148,41 @@ pub enum AiPicker {
 pub use crate::input::TextInput;
 pub struct Settings {
     pub draft: Config,
-    pub selected: usize,
+    pub selected: SettingId,
     pub error: Option<String>,
     pub input: Option<TextInput>,
+    pub confirm_discard: bool,
 }
 impl Settings {
     pub fn in_menu(&self) -> bool {
-        self.selected >= SETTINGS_MENU
+        matches!(self.selected, SettingId::Menu(_))
     }
-    pub fn rows(&self) -> &'static [usize] {
-        let section = settings_section(self.selected);
-        if section == 3 {
-            ai_rows(&self.draft.ai)
-        } else {
-            SETTINGS_SECTIONS[section].1
-        }
-    }
-
-    pub fn menu(draft: Config) -> Self {
-        Self {
-            selected: SETTINGS_MENU,
-            ..Self::new(draft)
-        }
+    pub fn rows(&self) -> &'static [SettingId] {
+        setting_rows(self.selected.section(), &self.draft.ai)
     }
     pub fn new(draft: Config) -> Self {
         Self {
             draft,
-            selected: 0,
+            selected: SettingId::Menu(Section::Appearance),
             error: None,
             input: None,
+            confirm_discard: false,
+        }
+    }
+}
+pub struct SoundSettings {
+    pub selected: usize,
+    pub volumes: [u8; SOUND_COUNT],
+    pub audition: bool,
+    pub error: Option<String>,
+}
+impl SoundSettings {
+    pub fn new(config: &Config, audition: bool) -> Self {
+        Self {
+            selected: 0,
+            volumes: config.sound_volumes,
+            audition,
+            error: None,
         }
     }
 }
@@ -103,20 +190,29 @@ pub enum Overlay {
     None,
     Help,
     Settings(Settings),
-    Sounds(Settings),
+    Sounds(SoundSettings),
     Planner(crate::planning::Panel),
     Conversation(crate::planning::Conversation),
 }
+struct AppearancePreview {
+    scene: Background,
+    path: String,
+    image: Option<Image>,
+}
+
 pub struct App {
     pub config: Config,
     pub config_path: PathBuf,
     pub timer: Pomodoro,
     pub pomodoro_visible: bool,
+    pub focused_task_id: Option<u64>,
+    pub pending_task_completion: Option<u64>,
     pub overlay: Overlay,
     pub started: Instant,
     pub notice: Option<(String, Instant)>,
     pub quit: bool,
     pub image: Option<Image>,
+    appearance_preview: RefCell<Option<AppearancePreview>>,
     pub music_on: bool,
     pub music_ready: bool,
     pub ambient_on: bool,
@@ -136,6 +232,7 @@ pub struct App {
     chatgpt_started: bool,
     pub chatgpt_status: String,
     pub chatgpt_connected: bool,
+    pub chatgpt_revision: u64,
     pub chatgpt_models: Vec<ChatgptModel>,
     pub ai_picker: Option<AiPicker>,
     open_model_picker: bool,
@@ -159,6 +256,7 @@ impl App {
             chatgpt_started: false,
             chatgpt_status: "Enter to open browser".into(),
             chatgpt_connected: false,
+            chatgpt_revision: 0,
             chatgpt_models: Vec::new(),
             ai_picker: None,
             open_model_picker: false,
@@ -172,11 +270,14 @@ impl App {
             config,
             config_path,
             pomodoro_visible: false,
+            focused_task_id: None,
+            pending_task_completion: None,
             overlay: Overlay::None,
             started: now,
             notice,
             quit: false,
             image,
+            appearance_preview: RefCell::default(),
             music_on: false,
             music_ready: false,
             ambient_on: false,
@@ -185,12 +286,67 @@ impl App {
     pub fn message(&mut self, text: impl Into<String>, now: Instant) {
         self.notice = Some((text.into(), now + Duration::from_secs(6)));
     }
+    pub fn appearance_draft(&self) -> Option<&Config> {
+        match &self.overlay {
+            Overlay::Settings(s) if !s.in_menu() && s.selected.section() == Section::Appearance => {
+                Some(&s.draft)
+            }
+            _ => None,
+        }
+    }
+    pub fn display_image(&self, config: &Config) -> Option<Image> {
+        if config.background == self.config.background
+            && config.image_path == self.config.image_path
+        {
+            return self.image.clone();
+        }
+        let mut preview = self.appearance_preview.borrow_mut();
+        let entry = preview.get_or_insert_with(|| AppearancePreview {
+            scene: config.background,
+            path: config.image_path.clone(),
+            image: Image::scene(config.background, &config.image_path, &self.config_path).ok(),
+        });
+        if entry.scene != config.background || entry.path != config.image_path {
+            *entry = AppearancePreview {
+                scene: config.background,
+                path: config.image_path.clone(),
+                image: Image::scene(config.background, &config.image_path, &self.config_path).ok(),
+            };
+        }
+        entry.image.clone()
+    }
+    pub fn sound_mix(&self) -> (bool, &[u8; SOUND_COUNT]) {
+        match &self.overlay {
+            Overlay::Sounds(s) => (s.audition, &s.volumes),
+            _ => (self.ambient_on, &self.config.sound_volumes),
+        }
+    }
+    pub fn sound_error(&mut self, error: String, now: Instant) {
+        if let Overlay::Sounds(s) = &mut self.overlay {
+            s.audition = false;
+            s.error = Some(error);
+        } else {
+            self.ambient_on = false;
+            self.message(error, now);
+        }
+    }
     pub fn tick(&mut self, now: Instant) -> u64 {
         if self.notice.as_ref().is_some_and(|(_, until)| now >= *until) {
             self.notice = None;
         }
+        let prior_focus = self.timer.completed_focus;
         let completions = self.timer.tick(now, &self.config);
-        if completions > 0 {
+        if self.timer.completed_focus > prior_focus {
+            if let Some(id) = self
+                .focused_task_id
+                .take()
+                .filter(|&id| self.pending_task(id))
+            {
+                self.pending_task_completion = Some(id);
+                self.notice = None;
+            }
+        }
+        if completions > 0 && self.pending_task_completion.is_none() {
             self.message(
                 format!(
                     "Session complete · {} is {}",
@@ -206,6 +362,23 @@ impl App {
         }
         completions
     }
+    fn pending_task(&self, id: u64) -> bool {
+        self.planner.data.entry(id).is_some_and(|task| {
+            task.kind == crate::planner::Kind::Task && !task.done && !task.archived
+        })
+    }
+    fn focus_task(&mut self, id: u64, now: Instant) {
+        if self.timer.status != Status::Ready || self.timer.phase != Phase::Focus {
+            self.message("Task focus is available when the focus timer is ready", now);
+        } else if self.pending_task_completion.is_some() {
+            self.message("Confirm the previous task first", now);
+        } else if self.pending_task(id) {
+            self.focused_task_id = Some(id);
+            self.pomodoro_visible = true;
+            self.timer.toggle(now);
+            self.notice = None;
+        }
+    }
     pub fn chatgpt_busy(&self) -> bool {
         self.chatgpt_action.is_some_and(|action| action != "status")
     }
@@ -220,6 +393,13 @@ impl App {
             if let Some((_, reply)) = self.chatgpt_client.poll() {
                 self.chatgpt_action = None;
                 self.chatgpt_started = false;
+                if reply.is_ok() && matches!(action, "connect" | "add" | "switch" | "disconnect") {
+                    self.chatgpt_revision += 1;
+                    self.ai_daily = None;
+                    self.ai_daily_data = None;
+                    self.ai_daily_settings = None;
+                    self.ai_daily_date = None;
+                }
                 if let Overlay::Settings(settings) = &mut self.overlay {
                     if action == "models" {
                         match reply.and_then(|text| {
@@ -255,7 +435,7 @@ impl App {
                                 settings.error = None;
                                 if matches!(action, "connect" | "add" | "switch") {
                                     settings.draft.ai.model.clear();
-                                    settings.selected = AI_MODEL_ROW;
+                                    settings.selected = SettingId::Model;
                                     self.chatgpt_action = Some("models");
                                 }
                             }
@@ -342,6 +522,22 @@ impl App {
         }
         match &mut self.overlay {
             Overlay::Planner(panel) => {
+                if key.code == KeyCode::Char('F')
+                    && panel.editor.is_none()
+                    && panel.kind == crate::planner::Kind::Task
+                    && !panel.completed
+                {
+                    let date = chrono::Local::now().date_naive();
+                    if let Some(id) = panel
+                        .entries(&self.planner.data, date)
+                        .get(panel.selected)
+                        .map(|task| task.id)
+                    {
+                        self.overlay = Overlay::None;
+                        self.focus_task(id, now);
+                    }
+                    return;
+                }
                 if panel.key(key, &mut self.planner) {
                     self.overlay = Overlay::None;
                 }
@@ -398,19 +594,31 @@ impl App {
                         s.selected = (s.selected + 1) % SOUND_COUNT
                     }
                     KeyCode::Left | KeyCode::Char('-') => {
-                        s.draft.sound_volumes[layer] =
-                            s.draft.sound_volumes[layer].saturating_sub(5)
+                        s.volumes[layer] = s.volumes[layer].saturating_sub(5)
                     }
                     KeyCode::Right | KeyCode::Char('+') | KeyCode::Char('=') => {
-                        s.draft.sound_volumes[layer] = (s.draft.sound_volumes[layer] + 5).min(100)
+                        s.volumes[layer] = (s.volumes[layer] + 5).min(100)
                     }
                     KeyCode::Char(' ') => {
-                        let v = &mut s.draft.sound_volumes[layer];
+                        let v = &mut s.volumes[layer];
                         *v = if *v == 0 { 25 } else { 0 };
                     }
-                    KeyCode::Char('x') => s.draft.sound_volumes.fill(0),
+                    KeyCode::Char('x') => s.volumes.fill(0),
+                    KeyCode::Char('v') => s.audition = !s.audition,
+                    KeyCode::Char('1' | '2' | '3') => {
+                        s.volumes.fill(0);
+                        let layers = match key.code {
+                            KeyCode::Char('1') => [(10, 28), (1, 16)],
+                            KeyCode::Char('2') => [(2, 28), (1, 18)],
+                            _ => [(6, 24), (4, 15)],
+                        };
+                        for (layer, volume) in layers {
+                            s.volumes[layer] = volume;
+                        }
+                    }
                     KeyCode::Enter => {
-                        let draft = s.draft.clone();
+                        let mut draft = self.config.clone();
+                        draft.sound_volumes = s.volumes;
                         match self.save_config(draft) {
                             Ok(()) => {
                                 self.ambient_on = self.config.sound_volumes.iter().any(|v| *v > 0);
@@ -452,9 +660,9 @@ impl App {
                                     }
                                     if provider == crate::ai::Provider::Chatgpt {
                                         s.selected = if self.chatgpt_connected {
-                                            AI_MODEL_ROW
+                                            SettingId::Model
                                         } else {
-                                            CHATGPT_CONNECT_ROW
+                                            SettingId::Connect
                                         };
                                     }
                                     s.error = None;
@@ -492,19 +700,19 @@ impl App {
                         }
                         KeyCode::Enter => {
                             let value = s.input.as_ref().unwrap().value.trim().to_string();
-                            if s.selected == MUSIC_ROW {
+                            if s.selected == SettingId::MusicUrl {
                                 if let Err(e) = validate_music_url(&value) {
                                     s.error = Some(e);
                                     return;
                                 }
                                 s.draft.music_url = value;
-                            } else if s.selected == IMAGE_ROW {
+                            } else if s.selected == SettingId::ImagePath {
                                 s.draft.image_path = value;
-                            } else if s.selected == AI_MODEL_ROW {
+                            } else if s.selected == SettingId::Model {
                                 s.draft.ai.model = value;
-                            } else if s.selected == AI_URL_ROW {
+                            } else if s.selected == SettingId::ApiUrl {
                                 s.draft.ai.base_url = value;
-                            } else if s.selected == AI_KEY_ROW {
+                            } else if s.selected == SettingId::ApiKey {
                                 s.draft.ai.key_env = value;
                             } else {
                                 if let Err(e) = hex_color(&value) {
@@ -514,9 +722,9 @@ impl App {
                                 let index = s.draft.palette_index();
                                 let p = &mut s.draft.clock_palettes[index];
                                 match s.selected {
-                                    16 => p.hours = value,
-                                    17 => p.seconds = value,
-                                    18 => p.separator = value,
+                                    SettingId::HoursColor => p.hours = value,
+                                    SettingId::SecondsColor => p.seconds = value,
+                                    SettingId::SeparatorColor => p.separator = value,
                                     _ => p.date = value,
                                 }
                             }
@@ -537,17 +745,29 @@ impl App {
                     }
                     return;
                 }
+                let kind = s.selected.descriptor().1;
+                if key.code != KeyCode::Esc && s.confirm_discard {
+                    s.confirm_discard = false;
+                    s.error = None;
+                }
                 match key.code {
-                    KeyCode::Esc if s.in_menu() => self.overlay = Overlay::None,
-                    KeyCode::Esc | KeyCode::Home => {
-                        s.selected = SETTINGS_MENU + settings_section(s.selected);
+                    KeyCode::Esc if s.in_menu() => {
+                        if s.draft == self.config || s.confirm_discard {
+                            self.overlay = Overlay::None;
+                        } else {
+                            s.confirm_discard = true;
+                            s.error = Some("Unsaved changes · Esc discard · Ctrl+S save".into());
+                        }
+                    }
+                    KeyCode::Esc => {
+                        s.selected = SettingId::Menu(s.selected.section());
                         s.error = None;
                     }
                     KeyCode::Enter if s.in_menu() => {
                         s.selected = s.rows()[0];
                         s.error = None;
                     }
-                    KeyCode::Enter if s.selected == AI_PROVIDER_ROW => {
+                    KeyCode::Enter if s.selected == SettingId::Provider => {
                         let index = crate::ai::Provider::ALL
                             .iter()
                             .position(|provider| *provider == s.draft.ai.provider)
@@ -555,7 +775,7 @@ impl App {
                         self.ai_picker = Some(AiPicker::Provider(index));
                     }
                     KeyCode::Enter
-                        if s.selected == AI_MODEL_ROW
+                        if s.selected == SettingId::Model
                             && s.draft.ai.provider == crate::ai::Provider::Chatgpt =>
                     {
                         if self.chatgpt_models.is_empty() {
@@ -573,22 +793,35 @@ impl App {
                             self.ai_picker = Some(AiPicker::Model(index));
                         }
                     }
-                    KeyCode::Enter if (CHATGPT_CONNECT_ROW..=31).contains(&s.selected) => {
+                    KeyCode::Enter if matches!(kind, SettingKind::Account(_)) => {
                         if s.draft.ai.provider != crate::ai::Provider::Chatgpt {
                             s.draft.ai.select(crate::ai::Provider::Chatgpt);
                         }
                         self.chatgpt_models.clear();
                         self.chatgpt_client.cancel();
                         self.chatgpt_started = false;
-                        self.chatgpt_action =
-                            Some(CHATGPT_ACTIONS[s.selected - CHATGPT_CONNECT_ROW]);
+                        if let SettingKind::Account(action) = kind {
+                            self.chatgpt_action = Some(action);
+                        }
                         self.ai_daily = None;
                         self.ai_daily_data = None;
                         self.ai_daily_settings = None;
                         self.ai_daily_date = None;
                         s.error = None;
                     }
-                    KeyCode::End => s.selected = AI_PROVIDER_ROW,
+                    KeyCode::Home | KeyCode::End => {
+                        let end = key.code == KeyCode::End;
+                        s.selected = if s.in_menu() {
+                            SettingId::Menu(if end {
+                                Section::Ai
+                            } else {
+                                Section::Appearance
+                            })
+                        } else {
+                            let rows = s.rows();
+                            rows[if end { rows.len() - 1 } else { 0 }]
+                        };
+                    }
                     KeyCode::Up | KeyCode::Char('k') => move_settings(s, false),
                     KeyCode::Down | KeyCode::Char('j') => move_settings(s, true),
                     KeyCode::Left | KeyCode::Char('-') if !s.in_menu() => {
@@ -610,8 +843,7 @@ impl App {
                     KeyCode::Enter if editable_setting(s) => {
                         s.input = Some(TextInput::new(setting_text(&s.draft, s.selected)));
                     }
-                    KeyCode::Enter if matches!(s.selected, 0..=3 | 7..=10 | 15 | 20 | 21 | 26 | AI_EFFORT_ROW) =>
-                    {
+                    KeyCode::Enter if matches!(kind, SettingKind::Choice) => {
                         adjust(&mut s.draft, s.selected, true);
                     }
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -633,6 +865,27 @@ impl App {
                 return;
             }
             Overlay::None => {}
+        }
+        if let Some(id) = self.pending_task_completion {
+            match key.code {
+                KeyCode::Char('y') => {
+                    self.planner.refresh();
+                    if self.pending_task(id) {
+                        if let Err(error) = self.planner.modify(id, |task| task.done = true) {
+                            self.message(error, now);
+                            return;
+                        }
+                    }
+                    self.pending_task_completion = None;
+                    self.message("Task completion confirmed", now);
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.pending_task_completion = None;
+                    return;
+                }
+                _ => {}
+            }
         }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
@@ -676,15 +929,17 @@ impl App {
             KeyCode::Char('p') => self.pomodoro_visible = !self.pomodoro_visible,
             KeyCode::Char(' ') if self.pomodoro_visible => self.timer.toggle(now),
             KeyCode::Char('r') if self.pomodoro_visible => {
+                self.focused_task_id = None;
                 self.timer.reset(&self.config);
                 self.message("Session reset · ready to start", now);
             }
             KeyCode::Char('n') if self.pomodoro_visible => {
+                self.focused_task_id = None;
                 self.timer.skip(&self.config, now);
                 self.message("Session skipped", now);
             }
             KeyCode::Char('s') => {
-                self.overlay = Overlay::Settings(Settings::menu(self.config.clone()));
+                self.overlay = Overlay::Settings(Settings::new(self.config.clone()));
                 self.chatgpt_models.clear();
                 if self.config_path.with_extension("chatgpt.json").exists()
                     && self.chatgpt_action.is_none()
@@ -693,11 +948,12 @@ impl App {
                 }
             }
             KeyCode::Char('a') => {
-                self.overlay = Overlay::Sounds(Settings::new(self.config.clone()))
+                self.overlay = Overlay::Sounds(SoundSettings::new(&self.config, self.ambient_on))
             }
             KeyCode::Char('z') => {
                 if !self.ambient_on && self.config.sound_volumes.iter().all(|v| *v == 0) {
-                    self.overlay = Overlay::Sounds(Settings::new(self.config.clone()));
+                    self.overlay =
+                        Overlay::Sounds(SoundSettings::new(&self.config, self.ambient_on));
                     return;
                 }
                 self.ambient_on = !self.ambient_on;
@@ -770,13 +1026,14 @@ impl App {
 }
 pub fn move_settings(settings: &mut Settings, down: bool) {
     if settings.in_menu() {
-        let index = settings_section(settings.selected);
-        settings.selected = SETTINGS_MENU
-            + if down {
-                (index + 1).min(SETTINGS_SECTIONS.len() - 1)
+        let index = settings.selected.section() as usize;
+        settings.selected = SettingId::Menu(
+            Section::ALL[if down {
+                (index + 1).min(Section::ALL.len() - 1)
             } else {
                 index.saturating_sub(1)
-            };
+            }],
+        );
         return;
     }
     let rows = settings.rows();
@@ -794,32 +1051,35 @@ pub fn move_settings(settings: &mut Settings, down: bool) {
 fn editable_setting(settings: &Settings) -> bool {
     is_text_row(settings.selected)
         && !(settings.draft.ai.provider == crate::ai::Provider::Chatgpt
-            && matches!(settings.selected, AI_MODEL_ROW | AI_URL_ROW | AI_KEY_ROW))
+            && matches!(
+                settings.selected,
+                SettingId::Model | SettingId::ApiUrl | SettingId::ApiKey
+            ))
 }
-fn is_text_row(row: usize) -> bool {
+fn is_text_row(row: SettingId) -> bool {
     matches!(
-        row,
-        IMAGE_ROW | MUSIC_ROW | 16..=19 | AI_MODEL_ROW | AI_URL_ROW | AI_KEY_ROW
+        row.descriptor().1,
+        SettingKind::Text(_) | SettingKind::Color
     )
 }
-fn setting_text(c: &Config, row: usize) -> String {
+fn setting_text(c: &Config, row: SettingId) -> String {
     match row {
-        AI_MODEL_ROW => c.ai.model.clone(),
-        AI_URL_ROW => c.ai.base_url.clone(),
-        AI_KEY_ROW => c.ai.key_env.clone(),
-        IMAGE_ROW => c.image_path.clone(),
-        MUSIC_ROW => c.music_url.clone(),
-        16 => c.palette().hours.clone(),
-        17 => c.palette().seconds.clone(),
-        18 => c.palette().separator.clone(),
+        SettingId::Model => c.ai.model.clone(),
+        SettingId::ApiUrl => c.ai.base_url.clone(),
+        SettingId::ApiKey => c.ai.key_env.clone(),
+        SettingId::ImagePath => c.image_path.clone(),
+        SettingId::MusicUrl => c.music_url.clone(),
+        SettingId::HoursColor => c.palette().hours.clone(),
+        SettingId::SecondsColor => c.palette().seconds.clone(),
+        SettingId::SeparatorColor => c.palette().separator.clone(),
         _ => c.palette().date.clone(),
     }
 }
-fn adjust(c: &mut Config, row: usize, increase: bool) {
+fn adjust(c: &mut Config, row: SettingId, increase: bool) {
     let duration = match row {
-        4 => Some(&mut c.focus_minutes),
-        5 => Some(&mut c.short_break_minutes),
-        6 => Some(&mut c.long_break_minutes),
+        SettingId::Focus => Some(&mut c.focus_minutes),
+        SettingId::ShortBreak => Some(&mut c.short_break_minutes),
+        SettingId::LongBreak => Some(&mut c.long_break_minutes),
         _ => None,
     };
     if let Some(value) = duration {
@@ -831,41 +1091,48 @@ fn adjust(c: &mut Config, row: usize, increase: bool) {
         return;
     }
     match row {
-        0 => c.format_24h = !c.format_24h,
-        1 => c.show_seconds = !c.show_seconds,
-        2 => c.blink_separator = !c.blink_separator,
-        3 => c.animations = !c.animations,
-        7 => c.auto_advance = !c.auto_advance,
-        8 => {
+        SettingId::TimeFormat => c.format_24h = !c.format_24h,
+        SettingId::Seconds => c.show_seconds = !c.show_seconds,
+        SettingId::Blink => c.blink_separator = !c.blink_separator,
+        SettingId::Motion => c.animations = !c.animations,
+        SettingId::AutoAdvance => c.auto_advance = !c.auto_advance,
+        SettingId::Notifications => {
             c.notifications = if increase {
                 c.notifications.next()
             } else {
                 c.notifications.next().next()
             }
         }
-        9 => {
+        SettingId::Weather => {
             c.weather = if increase {
                 c.weather.next()
             } else {
                 c.weather.next().next()
             }
         }
-        10 => {
+        SettingId::Background => {
             c.background = if increase {
                 c.background.next()
             } else {
                 c.background.previous()
             }
         }
-        12 => {
+        SettingId::Brightness => {
             c.image_brightness = if increase {
                 (c.image_brightness + 5).min(100)
             } else {
                 c.image_brightness.saturating_sub(5)
             }
         }
-        21 => c.show_plan = !c.show_plan,
-        22 => {
+        SettingId::Workspace => c.show_plan = !c.show_plan,
+        SettingId::DashboardOpacity => {
+            c.dashboard_opacity = if increase {
+                (c.dashboard_opacity + 5).min(100)
+            } else {
+                c.dashboard_opacity.saturating_sub(5)
+            }
+        }
+        SettingId::Provider => {
             let provider = if increase {
                 c.ai.provider.next()
             } else {
@@ -873,30 +1140,30 @@ fn adjust(c: &mut Config, row: usize, increase: bool) {
             };
             c.ai.select(provider);
         }
-        AI_EFFORT_ROW => c.ai.thinking_effort = c.ai.thinking_effort.cycle(increase),
-        26 => c.ai.auto_brief = !c.ai.auto_brief,
-        27 => {
+        SettingId::Effort => c.ai.thinking_effort = c.ai.thinking_effort.cycle(increase),
+        SettingId::AutoBrief => c.ai.auto_brief = !c.ai.auto_brief,
+        SettingId::Timeout => {
             c.ai.timeout_seconds = if increase {
                 (c.ai.timeout_seconds + 5).min(180)
             } else {
                 c.ai.timeout_seconds.saturating_sub(5).max(5)
             }
         }
-        20 => {
+        SettingId::ClockStyle => {
             c.clock_style = if increase {
                 c.clock_style.next()
             } else {
                 c.clock_style.previous()
             };
         }
-        15 => {
+        SettingId::Palette => {
             c.clock_palette = if increase {
                 (c.clock_palette + 1) % (c.clock_palettes.len() + 1)
             } else {
                 (c.clock_palette + c.clock_palettes.len()) % (c.clock_palettes.len() + 1)
             }
         }
-        14 => {
+        SettingId::MusicVolume => {
             c.music_volume = if increase {
                 (c.music_volume + 5).min(100)
             } else {
@@ -935,7 +1202,7 @@ mod tests {
         let mut app = App::new(Config::default(), path.clone());
         let now = app.started;
         let mut settings = Settings::new(app.config.clone());
-        settings.selected = 16;
+        settings.selected = SettingId::HoursColor;
         app.overlay = Overlay::Settings(settings);
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), now);
         app.key(
@@ -991,6 +1258,50 @@ mod tests {
         assert_eq!(app.timer.status, Status::Running);
     }
     #[test]
+    fn task_focus_requires_confirmation_after_a_completed_session() {
+        use crate::planner::{Entry, Kind};
+        let mut app = App::new(Config::default(), PathBuf::new());
+        let now = app.started;
+        let mut task = Entry::blank(Kind::Task);
+        task.title = "Write a proof".into();
+        let id = app.planner.put(task).unwrap();
+        press(&mut app, 'g', now);
+        press(&mut app, 'F', now);
+        assert_eq!(app.focused_task_id, Some(id));
+        assert_eq!(app.timer.status, Status::Running);
+        press(&mut app, 'r', now);
+        assert_eq!(app.focused_task_id, None);
+        assert_eq!(app.pending_task_completion, None);
+        press(&mut app, 'g', now);
+        press(&mut app, 'F', now);
+
+        let later = now + Phase::Focus.duration(&app.config);
+        assert_eq!(app.tick(later), 1);
+        assert_eq!(app.pending_task_completion, Some(id));
+        assert!(!app.planner.data.entry(id).unwrap().done);
+        press(&mut app, 'y', later);
+        assert!(app.planner.data.entry(id).unwrap().done);
+        assert_eq!(app.pending_task_completion, None);
+    }
+    #[test]
+    fn settings_end_stays_in_section_and_escape_confirms_discard() {
+        let mut app = App::new(Config::default(), PathBuf::new());
+        let now = app.started;
+        let key = |app: &mut App, code| app.key(KeyEvent::new(code, KeyModifiers::NONE), now);
+        press(&mut app, 's', now);
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::End);
+        assert!(matches!(&app.overlay, Overlay::Settings(s) if s.selected == SettingId::Weather));
+        key(&mut app, KeyCode::Right);
+        assert_ne!(app.appearance_draft().unwrap().weather, app.config.weather);
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Esc);
+        assert!(matches!(&app.overlay, Overlay::Settings(s) if s.confirm_discard));
+        key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(app.config.weather, crate::config::Weather::Clear);
+    }
+    #[test]
     fn cancelled_settings_do_not_change_config() {
         let now = Instant::now();
         let mut app = App::new(Config::default(), PathBuf::new());
@@ -1022,7 +1333,7 @@ mod tests {
         assert_eq!(app.config.background, Background::City);
         assert_eq!(Config::load(&path).unwrap().background, Background::City);
         let mut settings = Settings::new(app.config.clone());
-        settings.selected = MUSIC_ROW;
+        settings.selected = SettingId::MusicUrl;
         app.overlay = Overlay::Settings(settings);
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), now);
         app.key(
@@ -1052,7 +1363,7 @@ mod tests {
         let mut app = App::new(Config::default(), PathBuf::new());
         let now = app.started;
         let mut settings = Settings::new(app.config.clone());
-        settings.selected = MUSIC_ROW;
+        settings.selected = SettingId::MusicUrl;
         let original = settings.draft.music_url.clone();
         app.overlay = Overlay::Settings(settings);
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), now);
@@ -1063,5 +1374,54 @@ mod tests {
         } else {
             panic!("lost settings");
         }
+    }
+    #[test]
+    fn dashboard_opacity_adjusts_in_appearance_and_persists() {
+        let path = std::env::temp_dir().join(format!(
+            "lofiji-dashboard-opacity-{}.toml",
+            std::process::id()
+        ));
+        let mut app = App::new(Config::default(), path.clone());
+        let now = app.started;
+        press(&mut app, 's', now);
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), now);
+        while !matches!(&app.overlay, Overlay::Settings(s) if s.selected == SettingId::DashboardOpacity)
+        {
+            let prev = match &app.overlay {
+                Overlay::Settings(s) => s.selected,
+                _ => panic!("expected settings"),
+            };
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), now);
+            if matches!(&app.overlay, Overlay::Settings(s) if s.selected == prev) {
+                panic!("Dashboard opacity row not found in Appearance");
+            }
+        }
+        assert_eq!(SettingId::DashboardOpacity.section(), Section::Appearance);
+        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), now);
+        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), now);
+        if let Overlay::Settings(s) = &app.overlay {
+            assert_eq!(s.draft.dashboard_opacity, 65);
+        }
+        for _ in 0..10 {
+            app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), now);
+        }
+        if let Overlay::Settings(s) = &app.overlay {
+            assert_eq!(s.draft.dashboard_opacity, 100);
+        }
+        for _ in 0..25 {
+            app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), now);
+        }
+        if let Overlay::Settings(s) = &app.overlay {
+            assert_eq!(s.draft.dashboard_opacity, 0);
+        }
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), now);
+        app.key(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            now,
+        );
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(app.config.dashboard_opacity, 5);
+        assert_eq!(Config::load(&path).unwrap().dashboard_opacity, 5);
+        std::fs::remove_file(path).unwrap();
     }
 }

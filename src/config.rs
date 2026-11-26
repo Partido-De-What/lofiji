@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     env, fs, io,
+    os::unix::{fs::OpenOptionsExt, io::AsRawFd},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -246,6 +248,7 @@ pub fn validate_music_url(url: &str) -> Result<(), String> {
 pub struct Config {
     pub format_24h: bool,
     pub show_plan: bool,
+    pub dashboard_opacity: u8,
     pub ai: crate::ai::Settings,
     pub show_seconds: bool,
     pub blink_separator: bool,
@@ -271,6 +274,7 @@ impl Default for Config {
         Self {
             format_24h: true,
             show_plan: true,
+            dashboard_opacity: 75,
             ai: crate::ai::Settings::default(),
             show_seconds: true,
             blink_separator: true,
@@ -336,8 +340,11 @@ impl Config {
             return Err("Sound volumes must be between 0 and 100".into());
         }
 
-        if self.image_brightness > 100 || self.music_volume > 100 {
-            return Err("Image brightness and music volume must be between 0 and 100".into());
+        if self.image_brightness > 100 || self.dashboard_opacity > 100 || self.music_volume > 100 {
+            return Err(
+                "Image brightness, dashboard opacity, and music volume must be between 0 and 100"
+                    .into(),
+            );
         }
         if self.image_path.len() > 4096 || self.image_path.chars().any(char::is_control) {
             return Err("Invalid PNG / GIF path".into());
@@ -389,20 +396,43 @@ impl Config {
         Ok(config)
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
         self.validate()?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         fs::create_dir_all(parent).map_err(|e| format!("Cannot create settings directory: {e}"))?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path.with_extension("lock"))
+            .map_err(|e| format!("Cannot lock settings: {e}"))?;
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(format!(
+                "Cannot lock settings: {}",
+                io::Error::last_os_error()
+            ));
+        }
         let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        let temporary = path.with_extension(format!("toml.{}.tmp", std::process::id()));
-        let write = || -> io::Result<()> {
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let temporary =
+            path.with_extension(format!("toml.{}.{timestamp}.{seq}.tmp", std::process::id()));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|e| format!("Cannot create temporary settings: {e}"))?;
+        let mut write = || -> io::Result<()> {
             use std::io::Write;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
             fs::rename(&temporary, path)?;
@@ -527,6 +557,27 @@ mod tests {
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
     #[test]
+    fn settings_save_preserves_previous_file_when_locked() {
+        let directory =
+            env::temp_dir().join(format!("lofiji-settings-lock-{}", std::process::id()));
+        let path = directory.join("config.toml");
+        let config = Config::default();
+        config.save(&path).unwrap();
+        let lock = fs::File::open(path.with_extension("lock")).unwrap();
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let changed = Config {
+            show_seconds: !config.show_seconds,
+            ..config.clone()
+        };
+        assert!(changed.save(&path).is_err());
+        assert_eq!(Config::load(&path).unwrap(), config);
+        drop(lock);
+        changed.save(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap(), changed);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
     fn retired_fireplace_migrates_to_clear_and_is_not_a_cli_option() {
         let path = env::temp_dir().join(format!(
             "lofiji-retired-weather-{}.toml",
@@ -581,5 +632,12 @@ mod tests {
         }
         .validate()
         .is_err());
+        assert!(Config {
+            dashboard_opacity: 101,
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+        assert_eq!(Config::default().dashboard_opacity, 75);
     }
 }

@@ -2,10 +2,11 @@
 use crate::config::SOUND_COUNT;
 use std::{
     fs,
-    os::unix::{fs::DirBuilderExt, process::CommandExt},
+    io::Write,
+    os::unix::{fs::DirBuilderExt, net::UnixStream, process::CommandExt},
     path::PathBuf,
     process::{Child, Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub const NAMES: [&str; SOUND_COUNT] = [
@@ -38,13 +39,39 @@ const AUDIO: [&[u8]; SOUND_COUNT] = [
 struct Voice {
     child: Child,
     volume: u8,
+    reaped: bool,
+    pending_since: Option<Instant>,
+    socket: PathBuf,
+}
+impl Voice {
+    fn set_volume(&mut self, volume: u8) -> bool {
+        let Ok(mut stream) = UnixStream::connect(&self.socket) else {
+            return false;
+        };
+        if stream
+            .set_write_timeout(Some(Duration::from_millis(10)))
+            .is_err()
+        {
+            return false;
+        }
+        let command = format!("{{\"command\":[\"set_property\",\"volume\",{volume}]}}\n");
+        if stream.write_all(command.as_bytes()).is_ok() {
+            self.volume = volume;
+            true
+        } else {
+            false
+        }
+    }
 }
 impl Drop for Voice {
     fn drop(&mut self) {
-        unsafe {
-            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+        if !self.reaped && matches!(self.child.try_wait(), Ok(None)) {
+            unsafe {
+                libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            let _ = self.child.wait();
         }
-        let _ = self.child.wait();
+        let _ = fs::remove_file(&self.socket);
     }
 }
 pub struct Mixer {
@@ -89,23 +116,34 @@ impl Mixer {
             }
             if let Some(voice) = &mut self.voices[i] {
                 match voice.child.try_wait() {
-                    Ok(None) if voice.volume == volume => continue,
+                    Ok(None) => {
+                        if voice.volume == volume || voice.set_volume(volume) {
+                            voice.pending_since = None;
+                        } else if voice
+                            .pending_since
+                            .get_or_insert_with(Instant::now)
+                            .elapsed()
+                            > Duration::from_secs(2)
+                        {
+                            return Err(format!("Cannot adjust {} volume through mpv", NAMES[i]));
+                        }
+                        continue;
+                    }
                     Ok(Some(_)) => {
+                        voice.reaped = true;
+                        self.voices[i] = None;
                         return Err(format!(
                             "{} stopped; check mpv and the sound device",
                             NAMES[i]
-                        ))
+                        ));
                     }
                     Err(e) => return Err(format!("Sound player error: {e}")),
-                    _ => {}
                 }
             }
-            self.voices[i] = None;
-            let file = self
-                .directory
-                .as_ref()
-                .ok_or("Sound assets unavailable")?
-                .join(format!("{i}.ogg"));
+            let dir = self.directory.as_ref().ok_or("Sound assets unavailable")?;
+            let file = dir.join(format!("{i}.ogg"));
+            let socket = dir.join(format!("{i}.sock"));
+            let _ = fs::remove_file(&socket);
             let child = Command::new("mpv")
                 .args([
                     "--no-config",
@@ -114,6 +152,7 @@ impl Mixer {
                     "--input-terminal=no",
                     "--loop-file=inf",
                 ])
+                .arg(format!("--input-ipc-server={}", socket.display()))
                 .arg(format!("--volume={volume}"))
                 .arg("--")
                 .arg(file)
@@ -123,7 +162,13 @@ impl Mixer {
                 .process_group(0)
                 .spawn()
                 .map_err(|e| format!("Ambient sounds need mpv: {e}"))?;
-            self.voices[i] = Some(Voice { child, volume });
+            self.voices[i] = Some(Voice {
+                child,
+                volume,
+                reaped: false,
+                pending_since: None,
+                socket,
+            });
         }
         Ok(())
     }

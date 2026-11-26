@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import pty
 import re
-import select
 import signal
 import struct
 import subprocess
@@ -16,6 +15,8 @@ import termios
 import threading
 import time
 import tomllib
+
+from pty_support import read_output, terminate, wait_output
 
 ROOT=Path(__file__).resolve().parents[1]
 BIN=ROOT/'target/debug/lofiji'
@@ -27,12 +28,17 @@ class Handler(BaseHTTPRequestHandler):
         size=int(self.headers.get('Content-Length',0));body=json.loads(self.rfile.read(size))
         self.server.records.append((self.path,dict(self.headers),body))
         provider=self.server.provider;mode=self.server.mode;self.server.started.set()
-        if mode in ['slow','timeout','stale']:self.server.release.wait(10)
+        body_text = json.dumps(body)
+        daily = 'Suggest my next step for today' in body_text
+        if mode in ['slow','timeout','stale'] or (mode == 'parallel' and daily):
+            self.server.release.wait(10)
         if mode=='error':status=401;response={'error':{'message':SECRET}}
         else:
             status=200
             text='Stale suggestion must not appear' if mode=='stale' else 'Provider advice: review the proof first.'
-            if 'Suggest my next step for today' in json.dumps(body):
+            if 'And then?' in body_text:
+                text = 'Provider follow-up: write down the missing step.'
+            if daily:
                 text = 'Task: 1\nNext: ' + text + '\nTip: focus'
 
             if provider=='openai':response={'output':[{'content':[{'type':'output_text','text':text}]}]}
@@ -65,16 +71,16 @@ with tempfile.TemporaryDirectory(prefix='lofiji-ai-test-') as tmp:
         before=len(server.records)
         proc=subprocess.Popen([str(BIN),'--config',str(config)],stdin=slave,stdout=slave,stderr=slave,env=env)
         output=bytearray()
-        def drain(seconds=.15):
-            end=time.monotonic()+seconds
-            while time.monotonic()<end:
-                if select.select([master],[],[],max(0,end-time.monotonic()))[0]:output.extend(os.read(master,65536))
+        def collect(seconds=.5, until=None):
+            output.extend(read_output(master, seconds, until=until))
             return ANSI.sub(b'',bytes(output))
-        def send(keys):os.write(master,keys);return drain()
+        def send(keys):
+            os.write(master,keys)
+            return collect()
         def wait_for(marker,seconds=4):
             end=time.monotonic()+seconds;last_resize=0;width=120
             while time.monotonic()<end:
-                if marker in drain(.05):return
+                if marker in collect(.05):return
                 # A VT stream contains differential cell updates. Resizing asks
                 # Ratatui for a complete frame before checking visible text.
                 if time.monotonic()-last_resize>.3:
@@ -83,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='lofiji-ai-test-') as tmp:
                     os.kill(proc.pid,signal.SIGWINCH);last_resize=time.monotonic()
             raise AssertionError(f'{provider}/{mode}: missing expected UI response '+repr(marker))
         try:
-            drain(.25)
+            output.extend(wait_output(master,b"\x1b[?2004h"))
             if not auto:
                 assert len(server.records)==before,'AI request occurred without a user action'
                 send(b'c')
@@ -105,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix='lofiji-ai-test-') as tmp:
                 wait_until=time.monotonic()+1
                 spinner=[frame.encode() for frame in ['◐','◓','◑','◒']]
                 while sum(frame in output for frame in spinner)<2 and time.monotonic()<wait_until:
-                    drain(.05)
+                    collect(.05)
                 assert sum(frame in output for frame in spinner)>=2,'waiting indicator stopped animating with scene motion off'
                 children=set()
                 for file in Path(f'/proc/{proc.pid}/task').glob('*/children'):
@@ -120,11 +126,22 @@ with tempfile.TemporaryDirectory(prefix='lofiji-ai-test-') as tmp:
             elif mode=='timeout':
                 wait_for(b'AI request timed out',7);send(b'\x1b');send(b'q');assert proc.wait(timeout=2)==0
             elif mode=='error':
-                wait_for(b'AI authentication refused');assert SECRET.encode() not in drain();send(b'\x1b');send(b'q');assert proc.wait(timeout=2)==0
+                wait_for(b'AI authentication refused');assert SECRET.encode() not in collect();send(b'\x1b');send(b'q');assert proc.wait(timeout=2)==0
             elif mode=='stale':
                 send(b'+New task\r');server.release.set();wait_for(b'Goals changed')
-                assert b'Stale suggestion must not appear' not in drain()
+                assert b'Stale suggestion must not appear' not in collect()
                 send(b'q');assert proc.wait(timeout=2)==0
+            elif mode == 'parallel':
+                send(b'c')
+                send(b'What can I work on now?\r')
+                wait_for(b'Provider advice: review')
+                assert len(server.records) == before + 2, 'chat was blocked by the daily request'
+                send(b'\x1b')
+                server.release.set()
+                wait_for(b'AI next step ready')
+                wait_for(b'Open Pomodoro with p.')
+                send(b'q')
+                assert proc.wait(timeout=2)==0
             elif auto:
                 wait_for(b'AI ');wait_for(b'Provider advice: review');wait_for(b'Open Pomodoro with p.')
                 send(b'q');assert proc.wait(timeout=2)==0
@@ -133,9 +150,9 @@ with tempfile.TemporaryDirectory(prefix='lofiji-ai-test-') as tmp:
                 assert len(tomllib.loads(data.read_text())['entries'])==1,'model reply changed task records'
                 wait_for_count=len(server.records);send(b'And then?\r')
                 end=time.monotonic()+2
-                while len(server.records)==wait_for_count and time.monotonic()<end:drain(.05)
+                while len(server.records)==wait_for_count and time.monotonic()<end:collect(.05)
                 assert 'Provider advice: review' in json.dumps(server.records[-1][2]),'assistant conversation history was not sent'
-                drain(.3);count=len(server.records);send(b'task: Saved locally\r')
+                wait_for(b'Provider follow-up:');count=len(server.records);send(b'task: Saved locally\r')
                 assert len(server.records)==count,'explicit task command was sent to AI'
                 assert len(tomllib.loads(data.read_text())['entries'])==2
                 send(b'\x1b');send(b'q');assert proc.wait(timeout=2)==0
@@ -144,11 +161,11 @@ with tempfile.TemporaryDirectory(prefix='lofiji-ai-test-') as tmp:
             assert termios.tcgetattr(slave)==baseline,'terminal not restored after AI'
         finally:
             server.release.set()
-            if proc.poll() is None:proc.terminate();proc.wait(timeout=3)
+            terminate(master, proc)
             os.close(master);os.close(slave)
     try:
         for provider in ['openai','anthropic','gemini','ollama','openrouter','compatible']:
             run(provider);print(f'PASS: {provider} native protocol, context/history, local commands and credential handling',flush=True)
-        for mode,auto in [('slow',False),('error',False),('timeout',False),('normal',True),('stale',True)]:
+        for mode,auto in [('slow',False),('error',False),('timeout',False),('normal',True),('parallel',True),('stale',True)]:
             run('ollama',mode,auto);print(f'PASS: AI {mode}, auto={auto}',flush=True)
     finally:server.shutdown();server.server_close()

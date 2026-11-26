@@ -1,6 +1,7 @@
 """Private worker for OpenAI's public-client ChatGPT plan authorization."""
 import base64
 import fcntl
+from contextlib import contextmanager
 import hashlib
 import hmac
 import http.server
@@ -336,18 +337,6 @@ def operation(path, command):
     action = command["action"]
     if action == "status":
         return status(active)
-    if action in ("connect", "add"):
-        try:
-            import cryptography  # Check before opening the browser.
-        except ImportError as exc:
-            raise Problem("ChatGPT sign-in needs Python cryptography") from exc
-        save(path, state)  # Persist the host identifier before registration.
-        account = authorize(state["host"], active if action == "connect" else None)
-        accounts[:] = [a for a in accounts if a["client"] != account["client"]]
-        accounts.append(account)
-        state["active"] = account["client"]
-        save(path, state)
-        return status(account)
     if action == "switch":
         if not accounts:
             return status(None)
@@ -368,31 +357,58 @@ def operation(path, command):
         save(path, state)
         label = status(active)
         return label if confirmed else label + " · check ChatGPT Settings → Usage"
-    if action == "models":
-        return json.dumps(list_models(access_token(path, state, active)))
-    if action == "chat":
-        token = access_token(path, state, active)
-        effort = command.get("thinking_effort")
-        try:
-            return generate(token, command["instructions"], command["messages"], command["model"],
-                            command["timeout"], effort)
-        except urllib.error.HTTPError as exc:
-            if effort and exc.code in (400, 422):
-                raise Problem("Model rejected the request. Check model support or try Model default for thinking effort.") from exc
-            raise
+    if action in ("models", "chat"):
+        return access_token(path, state, active)
     raise Problem("Unknown ChatGPT operation")
+
+
+@contextmanager
+def account_lock(path):
+    fd = os.open(str(path) + ".lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w"):
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+
+
+def connect(path, action):
+    try:
+        import cryptography  # Check before opening the browser.
+    except ImportError as exc:
+        raise Problem("ChatGPT sign-in needs Python cryptography") from exc
+    with account_lock(path):
+        state = load(path)
+        active = next((a for a in state["accounts"] if a["client"] == state["active"]), None)
+        save(path, state)  # Persist the host identifier before registration.
+    account = authorize(state["host"], active if action == "connect" else None)
+    with account_lock(path):
+        state = load(path)
+        state["accounts"] = [a for a in state["accounts"] if a["client"] != account["client"]]
+        state["accounts"].append(account)
+        state["active"] = account["client"]
+        save(path, state)
+    return status(account)
 
 
 def run(command):
     path = Path(command["path"])
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(str(path) + ".lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w"):
+    action = command["action"]
+    if action in ("connect", "add"):
+        return connect(path, action)
+    with account_lock(path):
+        result = operation(path, command)
+    if action == "models":
+        return json.dumps(list_models(result))
+    if action == "chat":
+        effort = command.get("thinking_effort")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise Problem("ChatGPT is busy in another Lofiji window") from exc
-        return operation(path, command)
+            return generate(result, command["instructions"], command["messages"], command["model"],
+                            command["timeout"], effort)
+        except urllib.error.HTTPError as exc:
+            if effort and exc.code in (400, 422):
+                raise Problem("Model rejected the request. Check model support or try Model default for thinking effort.") from exc
+            raise
+    return result
 
 
 def main():
